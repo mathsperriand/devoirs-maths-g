@@ -662,42 +662,53 @@
       const sendResults = async () => {
         setBusy(true);
         try {
+          setStatus("Connexion Gmail — choisissez maths.perriand@gmail.com…");
           await getGmailToken();
         } catch(e) {
-          setStatus("❌ Erreur authentification : " + e.message);
+          setStatus("❌ " + (e.message || e) + " — Réessayez.");
           setBusy(false); return;
         }
-
+        let errors = [];
         for(const c of corrections){
-          if(c.skipped||!c.email) continue;
+          if(c.skipped||!c.email)continue;
           setStatus(`Envoi à ${c.name}…`);
-          
-          // 1. Demander à l'IA du LaTeX pur
-          const promptCorrigé = `Génère le corrigé détaillé pour ${c.name.split(" ")[0]} (note : ${c.note}/20). 
-          Utilise du format LaTeX pour toutes les mathématiques (ex: $m_1 * m_2 = -1$). 
-          Ne simplifie pas les formules en texte brut, utilise LaTeX.`;
-          
-          const corrTexte = await callGemini(apiKey, [{text: promptCorrigé}], "Tu es professeur de maths. Réponds uniquement en LaTeX propre.", false);
+          const details=c.details?.map(d=>`• ${d.exercice} : ${d.obtenu}/${d.sur} — ${d.remarque}`).join("\n")||"";
+          const prenom = c.name.split(" ")[0];
+          const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
+          const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
+          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\nCordialement,\nF. Nocca`;
+          const subject=`Résultats – ${sessionName}`;
+          let pdfB64=null, pdfFilename=null;
 
-          // 2. Génération PDF avec rendu LaTeX via KaTeX
-          const {jsPDF} = window.jspdf;
-          const pdf = new jsPDF();
-          pdf.setFontSize(12);
-          
-          // Fonction simplifiée pour écrire du texte
-          pdf.text(`Corrigé - ${c.name}`, 15, 20);
-          pdf.text(`Note : ${c.note}/20`, 15, 30);
-          
-          // NOTE : Pour un rendu LaTeX parfait dans le PDF, 
-          // la méthode la plus fiable consiste à injecter le LaTeX 
-          // dans une page HTML invisible, la convertir en canvas (image), 
-          // puis l'insérer dans le PDF.
-          
-          pdf.save(`corrige_${c.name.split(" ")[0]}.pdf`);
-          // ... (ici, intégrer l'envoi Gmail avec le fichier généré)
-        }
-        setBusy(false);
-      };
+          try {
+            setStatus(`Génération du corrigé pour ${prenom}…`);
+            const parts = [{ text: "Génère le corrigé détaillé pour " + prenom + " (note : " + c.note + "/20).\n" +
+              "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
+              "DÉTAIL :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
+              "Retourne le corrigé en texte simple lisible. Pour les formules mathématiques, écris-les de façon lisible : f(x) = 2x+3, racine(2), x^2, etc.\n" +
+              "Structure : Exercice 1, question par question avec la solution complète." }];
+            
+            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte lisible, formules en notation simple.", false);
+
+            setStatus(`Mise en page PDF pour ${prenom}…`);
+            const {jsPDF} = window.jspdf;
+            const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
+            const marg=15, pw=180, lh=5.5;
+            let y = marg;
+
+            const writeLine = (txt, opts={}) => {
+              if (!txt) return;
+              pdf.setFont("helvetica", opts.bold?"bold":"normal");
+              pdf.setFontSize(opts.size||10);
+              pdf.setTextColor(...(opts.color||[0,0,0]));
+              const lines = pdf.splitTextToSize(String(txt), pw);
+              lines.forEach(line => {
+                if (y > 280) { pdf.addPage(); y = marg; }
+                pdf.text(line, marg, y);
+                y += lh;
+              });
+              y += (opts.after||1);
+            };
 
             writeLine(`Corrigé — ${prenom}`, {bold:true, size:14, after:3});
             const nc = !isNaN(+c.note)?(+c.note>=10?[22,163,74]:[220,38,38]):[0,0,0];
