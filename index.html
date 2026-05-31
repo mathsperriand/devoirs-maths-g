@@ -55,27 +55,9 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "📄 PDF", "✏️ Correction", "📬 Résultats"];
 
-    const DEFAULT_PROMPT = `Tu es un professeur de mathématiques expert, pédagogue et profondément bienveillant. Analyse la copie de l'élève avec un soin extrême.
-
-DÉCHIFFRAGE MANUSCRIT : Prends le temps de décomposer visuellement chaque trait. Les copies sont manuscrites, parfois raturées ou peu lisibles. Déduis les symboles par le contexte logique de l'exercice avant de compter une erreur.
-
-CONSIGNES DE NOTATION :
-- Valorise systématiquement la démarche : une méthode correcte avec une erreur de calcul (étourderie, signe) doit obtenir la majorité des points de la question.
-- Sois indulgent sur la rédaction mathématique mais exigeant sur la logique.
-- Valorise les débuts de recherche, les schémas ou les formules écrites, même si le calcul n'aboutit pas.
-- N'attribue jamais un 0/20 global. Si la copie est blanche ou hors-sujet, explique avec empathie comment démarrer la prochaine fois.
-
-CONSIGNES DE RÉDACTION (TON) :
-- Tutoie l'élève obligatoirement. Utilise uniquement son prénom (sans son nom de famille) pour t'adresser à lui.
-- Applique la méthode du "sandwich" : commence par un point positif fort, formule ensuite la critique constructive sur les erreurs, et termine par un encouragement chaleureux.
-- Le conseil doit être une action concrète et ciblée (ex: "Entraîne-toi à factoriser avec l'identité remarquable...", plutôt que "Révise tes cours").
-
-IMPÉRATIF TECHNIQUE :
-Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phrase d'introduction, sans phrase de conclusion, et SANS balise de code markdown (pas de \`\`\`json). Respecte scrupuleusement la structure suivante :
-[{"name": "Prénom de l'élève", "note": 14, "appreciation": "Texte de l'appréciation globale", "details": [{"exercice": "Exercice 1", "obtenu": "3.5", "sur": "5", "remarque": "Explication de la note"}], "conseil": "Action concrète pour progresser"}]`;
-
     /* ── Gmail OAuth ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
+    const GMAIL_API_KEY   = "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y";
     const GMAIL_SENDER    = "maths.perriand@gmail.com";
     const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
 
@@ -445,10 +427,6 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
 
       useEffect(()=>{ try{localStorage.setItem("prof_maths_gemini_apikey",apiKey);}catch{} },[apiKey]);
 
-      /* Prompt Modifiable */
-      const [correctionPrompt, setCorrectionPromptRaw] = useState(() => load("correctionPrompt", DEFAULT_PROMPT));
-      const setCorrectionPrompt = v => { setCorrectionPromptRaw(v); persist("correctionPrompt", v); };
-
       /* Étape 0 */
       const [subjectMode,  setSubjectModeRaw]  = useState(() => load("subjectMode", "generate"));
       const setSubjectMode = v => { setSubjectModeRaw(v); persist("subjectMode",v); };
@@ -541,12 +519,10 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
         try {
           const parts = [
             { inlineData: { mimeType: "application/pdf", data: b64 } },
-            { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne UNIQUEMENT un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\". SANS aucune balise de code markdown autour." }
+            { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur sans markdown.", true);
-          // Nettoyage de sécurité en cas de balises markdown résiduelles
-          const cleanRaw = raw.replace(/```json/gi, '').replace(/```/gi, '').trim();
-          const arr = JSON.parse(cleanRaw);
+          const raw = await callGemini(apiKey, parts, "Tu es professeur de mathématiques. Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
+          const arr = JSON.parse(raw.trim());
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
             setStudentsRaw(formatted);
@@ -608,16 +584,15 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
             parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
           }
           parts.push({ inlineData: { mimeType: "application/pdf", data: mergedB64 } });
-          parts.push({ text: `Copies des élèves :\n${studentList}\n\nSUJET${subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc}\n\nCORRIGÉ :\n${corrRef||"[utilise tes connaissances]"}\n\nIdentifie chaque copie et corrige-la de manière rigoureuse.` });
+          parts.push({ text: `Copies des élèves :\n${studentList}\n\nSUJET${subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc}\n\nCORRIGÉ :\n${corrRef||"[utilise tes connaissances]"}\n\nIdentifie chaque copie, ses pages, corrige-la.\nIMPORTANT : dans l'appréciation et le conseil, tutoie l'élève (tu, ton, ta) et utilise son prénom seul.\nRetourne exclusivement un tableau JSON : [{"name":"Nom Prénom","pageStart":1,"pageEnd":2,"note":14,"appreciation":"Lucas, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]` });
           
-          const raw = await callGemini(apiKey, parts, correctionPrompt, true);
-          const cleanRaw = raw.replace(/```json/gi, '').replace(/```/gi, '').trim();
-          const arr = JSON.parse(cleanRaw);
+          const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Dans tes appréciations et conseils, tutoie toujours l'élève et utilise son prénom seul. Réponds uniquement en JSON pur.", true);
+          const arr = JSON.parse(raw.trim());
           setCorrections(students.map(s=>{
             const f=arr.find(r=>r.name?.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
             return f?{...s,...f}:{...s,skipped:true};
           }));
-        } catch(e){setStatus("Erreur lors de la correction : "+e.message);}
+        } catch(e){setStatus("Erreur : "+e.message);}
         setBusy(false);setStatus("");
       };
 
@@ -629,10 +604,9 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
           if(!ans){results.push({...s,skipped:true});continue;}
           setStatus(`Correction de ${s.name}…`);
           try{
-            const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}` }];
-            const raw = await callGemini(apiKey, parts, correctionPrompt, true);
-            const cleanRaw = raw.replace(/```json/gi, '').replace(/```/gi, '').trim();
-            results.push({...s,...JSON.parse(cleanRaw)});
+            const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
+            const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
+            results.push({...s,...JSON.parse(raw.trim())});
           }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
         }
         setCorrections(results);setBusy(false);setStatus("");
@@ -713,13 +687,14 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
 
           try {
             setStatus(`Génération du corrigé LaTeX pour ${prenom}…`);
-            const parts = [{ text: "Génère le corrigé détaillé et rédigé pour " + prenom + " (note : " + c.note + "/20).\n" +
+            const parts = [{ text: "Rédige le corrigé mathématique strictement technique pour " + prenom + " (note : " + c.note + "/20).\n" +
               "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
               "DÉTAIL ET REMARQUES :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
-              "Rédige ce corrigé avec un formalisme mathématique rigoureux en utilisant impérativement la syntaxe LaTeX pour TOUTES les formules et expressions mathématiques (entoure les formules en ligne de simples symboles $ comme $f(x)=2x+3$ et les formules centrées de doubles symboles $$). Ne mets pas de balise markdown globale, écris directement le texte et les formules.\n" +
-              "Structure clairement : Exercice par exercice, question par question, avec les solutions rédigées." }];
+              "Fais des réponses courtes, directes et purement mathématiques. Ne remets pas d'appréciation globale ici.\n" +
+              "Rédige ce corrigé avec un formalisme mathématique rigoureux en utilisant impérativement la syntaxe LaTeX pour TOUTES les formules et expressions mathématiques (entoure les formules en ligne de simples symboles $ comme $f(x)=2x+3$ et les formules centrées de doubles symboles $$).\n" +
+              "IMPORTANT : Ne mets PAS de balises ou de blocs de code Markdown (pas de ``` ou ```latex), écris directement le texte et les formules LaTeX. Commence directement par le contenu du corrigé." }];
             
-            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de mathématiques. Utilise une syntaxe LaTeX impeccable pour toutes les formules.", false);
+            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de mathématiques. Utilise une syntaxe LaTeX impeccable pour toutes les formules. Tu ne mets jamais de blocs de code Markdown (pas de ```).", false);
 
             setStatus(`Mise en page graphique pour ${prenom}…`);
             
@@ -960,15 +935,6 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
           {step===2&&(<>
             {corrections.length===0&&(
               <Card>
-                <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>⚙️ Paramétrage de la correction (Modifiable)</div>
-                <Field label="Consignes envoyées à l'IA pour corriger :">
-                  <textarea value={correctionPrompt} onChange={e=>setCorrectionPrompt(e.target.value)} style={{ minHeight:200, fontSize:12, fontFamily:"monospace" }} />
-                </Field>
-              </Card>
-            )}
-
-            {corrections.length===0&&(
-              <Card>
                 <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
 
                 <div onDragOver={e=>e.preventDefault()}
@@ -1023,6 +989,7 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
                   <Card key={s.id}>
                     <SectionHead title={s.name} right={c&&!c.skipped
                       ?<div style={{ display:"flex",alignItems:"center",gap:8 }}>
+                          {c.pageStart&&<Bdg color="info">p.{c.pageStart}–{c.pageEnd}</Bdg>}
                           <span style={{ fontSize:22,fontWeight:500,color:nc }}>{c.note}<span style={{ fontSize:14,color:"#6b7280" }}>/20</span></span>
                         </div>:null}/>
                     {c&&!c.skipped?(<>
@@ -1055,11 +1022,10 @@ Réponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phras
                         parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
                       }
                       parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
-                      parts.push({ text: "Corrige cette copie en retard.\nSUJET"+(subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc)+"\nCORRIGÉ :\n"+(corrRef||"[utilise tes connaissances]") });
+                      parts.push({ text: "Corrige cette copie en retard (PDF joint).\nSUJET"+(subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc)+"\nCORRIGÉ :\n"+(corrRef||"[utilise tes connaissances]")+"\nRetourne uniquement un tableau JSON contenant un objet représentant la copie : [{\"name\":\"Nom Prénom\",\"pageStart\":1,\"pageEnd\":1,\"note\":14,\"appreciation\":\"...\",\"details\":[{\"exercice\":\"Ex 1\",\"obtenu\":\"7\",\"sur\":\"10\",\"remarque\":\"...\"}],\"conseil\":\"...\"}]" });
                       
-                      const raw = await callGemini(apiKey, parts, correctionPrompt, true);
-                      const cleanRaw = raw.replace(/```json/gi, '').replace(/```/gi, '').trim();
-                      const arr = JSON.parse(cleanRaw);
+                      const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds uniquement en JSON pur.", true);
+                      const arr = JSON.parse(raw.trim());
                       if(arr.length>0){
                         const newC=arr[0];
                         const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
