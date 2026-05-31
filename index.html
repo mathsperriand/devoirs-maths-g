@@ -55,7 +55,7 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "📄 PDF", "✏️ Correction", "📬 Résultats"];
 
-    const DEFAULT_PROMPT = "Tu es un professeur de mathématiques expert et bienveillant. Analyse les copies avec soin. Valorise systématiquement les étapes de raisonnement et les débuts de calculs, même si la réponse finale est incorrecte. Si une réponse est partielle, attribue une note proportionnelle, n'attribue jamais 0 sans explication détaillée. Réponds EXCLUSIVEMENT en format JSON pur, sans aucune balise markdown ni texte introductif. Tutoie l'élève.";
+    const DEFAULT_PROMPT = "Tu es un professeur de mathématiques expert, pédagogue et profondément bienveillant. Analyse la copie de l'élève avec un soin extrême.\n\nCONSIGNES DE NOTATION :\n- Valorise systématiquement la démarche : une méthode correcte avec une erreur de calcul (étourderie, signe) doit obtenir la majorité des points de la question.\n- Sois indulgent sur la rédaction mathématique mais exigeant sur la logique.\n- Valorise les débuts de recherche, les schémas ou les formules écrites, même si le calcul n'aboutit pas.\n- N'attribue jamais un 0/20 global. Si la copie est blanche ou hors-sujet, explique avec empathie comment démarrer la prochaine fois.\n\nCONSIGNES DE RÉDACTION (TON) :\n- Tutoie l'élève obligatoirement. Utilise uniquement son prénom (sans son nom de famille) pour t'adresser à lui.\n- Applique la méthode du \"sandwich\" : commence par un point positif fort, formule ensuite la critique constructive sur les erreurs, et termine par un encouragement chaleureux.\n- Le conseil doit être une action concrète et ciblée (ex: \"Entraîne-toi à factoriser avec l'identité remarquable...\", plutôt que \"Révise tes cours\").\n\nIMPÉRATIF TECHNIQUE :\nRéponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phrase d'introduction, sans phrase de conclusion, et SANS balise de code markdown (pas de ```json). Respecte scrupuleusement la structure suivante :\n[{\"name\": \"Prénom de l'élève\", \"note\": 14, \"appreciation\": \"Texte de l'appréciation globale\", \"details\": [{\"exercice\": \"Exercice 1\", \"obtenu\": \"3.5\", \"sur\": \"5\", \"remarque\": \"Explication de la note\"}], \"conseil\": \"Action concrète pour progresser\"}]";
 
     /* ── Gmail OAuth ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
@@ -709,39 +709,91 @@
           const prenom = c.name.split(" ")[0];
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\nCordialement,\nF. Nocca`;
+          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\nTu trouveras en pièce jointe ton corrigé personnalisé au format PDF avec les explications mathématiques détaillées.\n\nCordialement,\nF. Nocca`;
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
 
           try {
-            setStatus(`Génération du corrigé pour ${prenom}…`);
-            const parts = [{ text: "Génère le corrigé détaillé pour " + prenom + " (note : " + c.note + "/20).\n" +
-              "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
-              "DÉTAIL :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
-              "Retourne le corrigé en texte simple lisible. Pour les formules mathématiques, écris-les de façon lisible : f(x) = 2x+3, racine(2), x^2, etc.\n" +
-              "Structure : Exercice 1, question par question avec la solution complète." }];
+            setStatus(`Génération du corrigé LaTeX pour ${prenom}…`);
+            const parts = [{ text: `Génère le corrigé détaillé et personnalisé pour l'élève ${prenom} (qui a obtenu la note de ${c.note}/20).\nSUJET :\n${latexSrc||"[sujet fourni en PDF]"}\n\nDÉTAIL DES ERREURS DE L'ÉLÈVE :\n${(c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n")}\n\nCONSIGNE : Rédige un corrigé pas à pas des exercices où l'élève a échoué. Utilise impérativement la syntaxe LaTeX standard avec des dollars simples $...$ pour les formules en ligne (ex: $f(x) = x^2$) et des doubles dollars $$...$$ pour les équations centrées. Reste très pédagogue et encourageant.` }];
             
-            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte lisible, formules en notation simple.", false);
+            const corrTexte = await callGemini(apiKey, parts, "Tu es un professeur de mathématiques. Rédige ton retour en utilisant du LaTeX élégant pour toutes les expressions scientifiques.", false);
 
-            setStatus(`Mise en page PDF pour ${prenom}…`);
-            const {jsPDF} = window.jspdf;
-            const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
-            const marg=15, pw=180, lh=5.5;
-            let y = marg;
+            setStatus(`Rendu graphique du PDF pour ${prenom}…`);
+            
+            // Création d'un élément temporaire caché dans le DOM pour faire le rendu HTML + KaTeX
+            const tempDiv = document.createElement("div");
+            tempDiv.style.width = "175mm";
+            tempDiv.style.padding = "15mm";
+            tempDiv.style.background = "#ffffff";
+            tempDiv.style.color = "#111111";
+            tempDiv.style.fontFamily = "sans-serif";
+            tempDiv.style.fontSize = "11pt";
+            tempDiv.style.lineHeight = "1.6";
+            tempDiv.style.position = "absolute";
+            tempDiv.style.left = "-9999px";
+            
+            // Structure HTML interne du PDF
+            tempDiv.innerHTML = `
+              <h1 style="font-size: 18pt; margin-bottom: 5px; color: #1e3a8a;">Corrigé Personnel — ${prenom}</h1>
+              <div style="font-size: 14pt; font-weight: bold; margin-bottom: 15px; color: ${+c.note >= 10 ? '#16a34a' : '#dc2626'};">
+                Note : ${c.note}/20
+              </div>
+              <p style="font-style: italic; color: #4b5563; margin-bottom: 20px;">${appreciation.replace(/\n/g, '<br/>')}</p>
+              <hr style="border: 0; border-top: 0.5px solid #d1d5db; margin-bottom: 20px;"/>
+              <div style="margin-bottom: 20px;">${latexToHtml(corrTexte)}</div>
+              <hr style="border: 0; border-top: 0.5px solid #d1d5db; margin-bottom: 20px;"/>
+              <div style="background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 15px; margin-bottom: 20px; borderRadius: 6px;">
+                <strong style="color: #1e40af; display: block; margin-bottom: 4px;">💡 Conseil de révision :</strong>
+                <span style="color: #1e3a8a;">${conseil}</span>
+              </div>
+              <p style="font-size: 10pt; color: #6b7280; text-align: right; margin-top: 30px;">Cordialement, F. Nocca</p>
+            `;
+            document.body.appendChild(tempDiv);
 
-            const writeLine = (txt, opts={}) => {
-              if (!txt) return;
-              pdf.setFont("helvetica", opts.bold?"bold":"normal");
-              pdf.setFontSize(opts.size||10);
-              pdf.setTextColor(...(opts.color||[0,0,0]));
-              const lines = pdf.splitTextToSize(String(txt), pw);
-              lines.forEach(line => {
-                if (y > 280) { pdf.addPage(); y = marg; }
-                pdf.text(line, marg, y);
-                y += lh;
-              });
-              y += (opts.after||1);
-            };
+            // Conversion du rendu HTML (avec KaTeX) en Canvas puis en PDF
+            const canvas = await window.html2canvas(tempDiv, { scale: 2, useCORS: true });
+            document.body.removeChild(tempDiv);
+
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+            const W = pdf.internal.pageSize.getWidth();
+            const H = pdf.internal.pageSize.getHeight();
+            const iw = W - 30; // Marges de 15mm
+            let remaining = (canvas.height * iw) / canvas.width;
+            let srcY = 0;
+
+            while (remaining > 0) {
+              const sliceH = Math.min(remaining, H - 30);
+              const sc = document.createElement("canvas");
+              const ratio = canvas.width / iw;
+              sc.width = canvas.width;
+              sc.height = sliceH * ratio;
+              sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
+              
+              if (srcY > 0) pdf.addPage();
+              pdf.addImage(sc.toDataURL("image/png"), "PNG", 15, 15, iw, sliceH);
+              srcY += sliceH; remaining -= sliceH;
+            }
+
+            const pdfArrayBuffer = pdf.output("arraybuffer");
+            pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
+            pdfFilename = `corrige_${prenom}.pdf`;
+
+          } catch(e) { 
+            console.error("Erreur génération PDF corrigé mathématique:", e); 
+          }
+
+          try {
+            await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
+          } catch(e) {
+            errors.push(c.name);
+            console.error("Erreur envoi " + c.name, e);
+          }
+        }
+        setMailsDone(true); setBusy(false);
+        setStatus(errors.length ? `⚠️ Échec pour : ${errors.join(", ")}` : "");
+      };
 
             writeLine(`Corrigé — ${prenom}`, {bold:true, size:14, after:3});
             const nc = !isNaN(+c.note)?(+c.note>=10?[22,163,74]:[220,38,38]):[0,0,0];
