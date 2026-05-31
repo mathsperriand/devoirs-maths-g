@@ -55,8 +55,6 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "📄 PDF", "✏️ Correction", "📬 Résultats"];
 
-    const DEFAULT_PROMPT = "Tu es un professeur de mathématiques expert, pédagogue et profondément bienveillant. Analyse la copie de l'élève avec un soin extrême.\n\nCONSIGNES DE NOTATION :\n- Valorise systématiquement la démarche : une méthode correcte avec une erreur de calcul (étourderie, signe) doit obtenir la majorité des points de la question.\n- Sois indulgent sur la rédaction mathématique mais exigeant sur la logique.\n- Valorise les débuts de recherche, les schémas ou les formules écrites, même si le calcul n'aboutit pas.\n- N'attribue jamais un 0/20 global. Si la copie est blanche ou hors-sujet, explique avec empathie comment démarrer la prochaine fois.\n\nCONSIGNES DE RÉDACTION (TON) :\n- Tutoie l'élève obligatoirement. Utilise uniquement son prénom (sans son nom de famille) pour t'adresser à lui.\n- Applique la méthode du \"sandwich\" : commence par un point positif fort, formule ensuite la critique constructive sur les erreurs, et termine par un encouragement chaleureux.\n- Le conseil doit être une action concrète et ciblée (ex: \"Entraîne-toi à factoriser avec l'identité remarquable...\", plutôt que \"Révise tes cours\").\n\nIMPÉRATIF TECHNIQUE :\nRéponds EXCLUSIVEMENT sous la forme d'un tableau JSON valide, sans aucune phrase d'introduction, sans phrase de conclusion, et SANS balise de code markdown (pas de ```json). Respecte scrupuleusement la structure suivante :\n[{\"name\": \"Prénom de l'élève\", \"note\": 14, \"appreciation\": \"Texte de l'appréciation globale\", \"details\": [{\"exercice\": \"Exercice 1\", \"obtenu\": \"3.5\", \"sur\": \"5\", \"remarque\": \"Explication de la note\"}], \"conseil\": \"Action concrète pour progresser\"}]";
-
     /* ── Gmail OAuth ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
     const GMAIL_API_KEY   = "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y";
@@ -332,7 +330,7 @@
       return (
         <div style={{ maxWidth:700, margin:"0 auto", padding:"2rem 1rem" }}>
           <h1 style={{ marginBottom:8 }}>📐 Gestionnaire de devoirs (Gemini)</h1>
-          <p style={{ fontSize:13, color:"#6b7280", marginBottom:"1.5rem" }}>Chaque devoir est indépendant — ouvrez-en plusieurs dans des onglets différents.</p>
+          <p style={{ fontSize:13, color:"#6b7280", marginBottom:"1.5rem" }}>Chaque devoir ès indépendant — ouvrez-en plusieurs dans des onglets différents.</p>
 
           {lastSession && (
             <div style={{ background:"#dbeafe", border:"0.5px solid #93c5fd", borderRadius:10, padding:"14px 16px", marginBottom:16, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -457,9 +455,6 @@
       };
 
       /* Étape 2 */
-      const [customPrompt, setCustomPrompt]  = useState(() => load("customPrompt", DEFAULT_PROMPT));
-      const handleCustomPromptChange = v => { setCustomPrompt(v); persist("customPrompt", v); };
-
       const [answers,     setAnswersRaw]     = useState(() => load("answers", {}));
       const setAnswers = v => { setAnswersRaw(v); persist("answers",v); };
       const [corrections, setCorrectionsRaw] = useState(() => load("corrections", []));
@@ -570,7 +565,6 @@
         setBusy(false);setStatus("");
       };
 
-      /* LOGIQUE OPTIMISÉE : Analyse séquentielle et robuste face aux formats mixtes */
       const correctFromPdf = async () => {
         if (!copiesPdfs.length || !apiKey) return;
         setBusy(true);
@@ -590,7 +584,7 @@
             parts.push({ inlineData: { mimeType: "application/pdf", data: currentPdf.b64 } });
             parts.push({ text: `Fichier de copie analysé : ${currentPdf.name}\n\nListe des élèves attendus :\n${studentList}\n\nSUJET${subjectMode === "upload" ? " (voir PDF joint)" : ":\n" + latexSrc}\n\nCORRIGÉ :\n${corrRef || "[utilise tes connaissances]"}\n\nCONSIGNES D'ANALYSE MULTIMODALE :\n1. Ce document contient la copie d'un ou plusieurs élèves.\n2. L'écriture peut être dactylographiée ou manuscrite (parfois désordonnée ou difficile à lire).\n3. L'élève peut avoir écrit sur des feuilles à carreaux (Seyes ou petits carreaux). Fais complètement abstraction des lignes géométriques du fond pour ne pas confondre le quadrillage avec des symboles mathématiques (fractions, barres, indices, exposants).\n4. Déchiffre soigneusement l'écriture manuscrite et identifie précisément quel élève de la liste a rendu ce travail.\n\nIMPORTANT : Tutoie l'élève (tu, ton, ta) et utilise son prénom seul dans l'appréciation et le conseil.\n\nRetourne exclusivement un tableau JSON contenant les corrections pour ce fichier : [{"name":"Nom Prénom","note":14,"appreciation":"[Prénom], tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]` });
 
-            const raw = await callGemini(apiKey, parts, customPrompt, true);
+            const raw = await callGemini(apiKey, parts, "Tu es un correcteur de mathématiques expert. Tu sais déchiffrer avec précision toutes les écritures manuscrites sur papier quadrillé ou blanc. Réponds exclusivement en JSON pur, sans balises markdown.", true);
             
             try {
               const arr = JSON.parse(raw.trim());
@@ -633,7 +627,7 @@
           setStatus(`Correction de ${s.name}…`);
           try{
             const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
-            const raw = await callGemini(apiKey, parts, customPrompt, true);
+            const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
             results.push({...s,...JSON.parse(raw.trim())});
           }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
         }
@@ -692,6 +686,7 @@
         pdf.save(`corrections_${sessionName.replace(/[^a-z0-9]/gi,"_")}.pdf`);
       };
 
+      /* ── BLOC CORRIGÉ ET SECURISÉ ── */
       const sendResults = async () => {
         setBusy(true);
         try {
@@ -708,7 +703,6 @@
           const details=c.details?.map(d=>`• ${d.exercice} : ${d.obtenu}/${d.sur} — ${d.remarque}`).join("\n")||"";
           const prenom = c.name.split(" ")[0];
           
-          // Remplacements robustes sans Regex dynamiques risquées
           let appreciation = c.appreciation || "";
           appreciation = appreciation.replace(/il\/elle/gi, "tu").replace(/l'élève/gi, "tu");
           
@@ -725,7 +719,6 @@
             
             let corrTexte = await callGemini(apiKey, parts, "Tu es un professeur de mathématiques. Rédige ton corrigé personnalisé en utilisant du LaTeX élégant pour toutes les formules scientifiques.", false);
 
-            // Remplacements de nettoyage de sécurité statiques (sans variables dans la RegExp)
             corrTexte = corrTexte
               .replace(/^\s*Chère?\s+\w+,?\s*/i, "")
               .replace(/Remarque\s+pour\s+\w+/gi, "Remarque")
@@ -733,12 +726,10 @@
               .replace(/Document généré automatiquement par.*/gi, "")
               .trim();
               
-            // Réinjection forcée du prénom propre au début pour garantir le formalisme
             corrTexte = prenom + "\n\n" + corrTexte;
 
             setStatus(`Rendu visuel du PDF pour ${prenom}…`);
             
-            // Création d'un élément temporaire caché dans le DOM pour faire le rendu HTML + KaTeX
             const tempDiv = document.createElement("div");
             tempDiv.style.width = "175mm";
             tempDiv.style.padding = "15mm";
@@ -750,7 +741,6 @@
             tempDiv.style.position = "absolute";
             tempDiv.style.left = "-9999px";
             
-            // Structure HTML interne du PDF avec les formules interprétées par latexToHtml
             tempDiv.innerHTML = `
               <h1 style="font-size: 18pt; margin-bottom: 5px; color: #1e3a8a;">Corrigé Personnel — ${prenom}</h1>
               <div style="font-size: 14pt; font-weight: bold; margin-bottom: 15px; color: ${+c.note >= 10 ? '#16a34a' : '#dc2626'};">
@@ -768,7 +758,6 @@
             `;
             document.body.appendChild(tempDiv);
 
-            // Conversion du rendu HTML (avec le style et KaTeX) en Canvas puis en PDF de haute qualité
             const canvas = await window.html2canvas(tempDiv, { scale: 2, useCORS: true });
             document.body.removeChild(tempDiv);
 
@@ -776,7 +765,7 @@
             const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
             const W = pdf.internal.pageSize.getWidth();
             const H = pdf.internal.pageSize.getHeight();
-            const iw = W - 30; // Marges de 15mm de chaque côté
+            const iw = W - 30;
             let remaining = (canvas.height * iw) / canvas.width;
             let srcY = 0;
 
@@ -801,33 +790,6 @@
             console.error("Erreur génération PDF corrigé mathématique:", e); 
           }
 
-          try {
-            await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
-          } catch(e) {
-            errors.push(c.name);
-            console.error("Erreur envoi " + c.name, e);
-          }
-        }
-        setMailsDone(true); setBusy(false);
-        setStatus(errors.length ? `⚠️ Échec pour : ${errors.join(", ")}` : "");
-      };
-
-            writeLine(`Corrigé — ${prenom}`, {bold:true, size:14, after:3});
-            const nc = !isNaN(+c.note)?(+c.note>=10?[22,163,74]:[220,38,38]):[0,0,0];
-            writeLine(`Note : ${c.note}/20`, {bold:true, size:12, color:nc, after:3});
-            writeLine(appreciation, {size:10, color:[80,80,80], after:4});
-            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
-            writeLine(corrTexte, {size:10, after:4});
-            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
-            writeLine("Conseil :", {bold:true, size:10, after:1});
-            writeLine(conseil, {size:10, color:[30,64,175], after:4});
-            writeLine("Cordialement, F. Nocca", {size:9, color:[100,100,100]});
-
-            const pdfArrayBuffer = pdf.output("arraybuffer");
-            pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
-            pdfFilename = `corrige_${prenom}.pdf`;
-
-          } catch(e) { console.error("Erreur PDF corrigé:", e); }
           try {
             await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
           } catch(e) {
@@ -942,7 +904,7 @@
                   <span style={{ fontSize:20 }}>✓</span>
                   <div>
                     <div style={{ fontSize:14,fontWeight:500 }}>Sujet chargé : {upSubPdfName}</div>
-                    <div style={{ fontSize:12,color:"#6b7280" }}>Utilisé by l'IA à l'étape Correction.</div>
+                    <div style={{ fontSize:12,color:"#6b7280" }}>Utilisé par l'IA à l'étape Correction.</div>
                   </div>
                 </div>
               </Card>
@@ -974,21 +936,6 @@
           </>)}
 
           {step===2&&(<>
-            {/* Zone de modification de prompt : rendue visible en permanence à l'étape 2 */}
-            <Card>
-              <Field label="⚙️ Consignes de comportement de l'IA (Prompt système)">
-                <textarea 
-                  value={customPrompt} 
-                  onChange={e=>handleCustomPromptChange(e.target.value)}
-                  placeholder="Instructions de notation..."
-                  style={{ minHeight:110, fontSize:12, lineHeight:1.5 }}
-                />
-              </Field>
-              <p style={{ fontSize:11, color:"#6b7280", marginTop:4 }}>
-                * Important : La consigne "Réponds exclusivement en format JSON" est impérative pour que l'interface puisse extraire et afficher correctement les notes.
-              </p>
-            </Card>
-
             {corrections.length===0&&(
               <Card>
                 <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
@@ -1080,7 +1027,7 @@
                       parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
                       parts.push({ text: "Corrige cette copie en retard (PDF joint).\nSUJET"+(subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc)+"\nCORRIGÉ :\n"+(corrRef||"[utilise tes connaissances]")+"\nRetourne uniquement un tableau JSON contenant un objet représentant la copie : [{\"name\":\"Nom Prénom\",\"pageStart\":1,\"pageEnd\":1,\"note\":14,\"appreciation\":\"...\",\"details\":[{\"exercice\":\"Ex 1\",\"obtenu\":\"7\",\"sur\":\"10\",\"remarque\":\"...\"}],\"conseil\":\"...\"}]" });
                       
-                      const raw = await callGemini(apiKey, parts, customPrompt, true);
+                      const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds uniquement en JSON pur.", true);
                       const arr = JSON.parse(raw.trim());
                       if(arr.length>0){
                         const newC=arr[0];
