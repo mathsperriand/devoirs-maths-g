@@ -246,28 +246,14 @@
     function latexToHtml(src) {
       if (!window.katex) return `<pre>${src}</pre>`;
       let html = src
-        // 1. Gestion des blocs centrés \[ ... \] (très fréquents avec Gemini)
-        .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => {
-          try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
-          catch { return `<div>\\[${m}\\]</div>`; }
-        })
-        // 2. Gestion des blocs centrés $$ ... $$
         .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
           try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `<div>$$${m}$$</div>`; }
         })
-        // 3. Gestion des maths en ligne \( ... \)
-        .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => {
-          try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
-          catch { return `\(${m}\)`; }
-        })
-        // 4. Gestion des maths en ligne $ ... $
         .replace(/\$([^\$\n]+?)\$/g, (_, m) => {
           try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
           catch { return `$${m}$`; }
         });
-
-      // Suite du nettoyage de la mise en forme textuelle LaTeX
       html = html
         .replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, '<div style="text-align:center">$1</div>')
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
@@ -311,7 +297,7 @@
       return <span style={{ fontSize:11, fontWeight:500, padding:"3px 10px", borderRadius:6, background:bg, color:tc }}>{children}</span>;
     }
 
-    /* ── SessionManager ── */
+    /* ════ SessionManager ════ */
     function SessionManager({ onSelect }) {
       const [sessions, setSessions] = useState(() => getAllSessions());
       const [newName,  setNewName]  = useState("");
@@ -530,7 +516,7 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
+          const raw = await callGemini(apiKey, parts, "Tu es professeur de mathématiques au lycée français. LaTeX rigoureux pour toutes les formules.", true);
           const arr = JSON.parse(raw.trim());
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -699,47 +685,90 @@
             const parts = [{ text: "Génère le corrigé détaillé pour " + prenom + " (note : " + c.note + "/20).\n" +
               "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
               "DÉTAIL :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
-              "Retourne le corrigé en texte simple lisible. Pour les formules mathématiques, écris-les de façon lisible : f(x) = 2x+3, racine(2), x^2, etc.\n" +
-              "Structure : Exercice 1, question par question avec la solution complète." }];
+              "Retourne le corrigé au format LaTeX rigoureux pour toutes les formules mathématiques (utilise impérativement les délimiteurs $ pour les formules en ligne et $$ pour les blocs de formules).\n" +
+              "Structure : Exercice 1, question par question avec la solution complète et soignée." }];
             
-            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte lisible, formules en notation simple.", false);
+            const corrLaTeX = await callGemini(apiKey, parts, "Tu es professeur de mathématiques. Utilise de façon systématique un LaTeX parfait pour toutes les écritures mathématiques.", false);
 
-            setStatus(`Mise en page PDF pour ${prenom}…`);
+            setStatus(`Rendu graphique pour ${prenom}…`);
+            const container = document.createElement("div");
+            container.style.position = "absolute";
+            container.style.left = "-9999px";
+            container.style.top = "0";
+            container.style.width = "750px";
+            container.style.background = "#ffffff";
+            container.style.color = "#111117";
+            container.style.padding = "45px";
+            container.style.fontFamily = "system-ui, -apple-system, sans-serif";
+            container.style.lineHeight = "1.8";
+            container.style.fontSize = "13.5px";
+
+            const ncColor = !isNaN(+c.note) ? (+c.note >= 10 ? "#16a34a" : "#dc2626") : "#111";
+            container.innerHTML = `
+              <div style="font-family:system-ui, -apple-system, sans-serif;">
+                <div style="text-align:center; margin-bottom: 24px; border-bottom: 2px solid #111827; padding-bottom: 16px;">
+                  <h1 style="font-size: 20px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Fiche de Correction Individuelle</h1>
+                  <div style="font-size: 14px; color: #6b7280; margin-top: 4px;">Devoir : ${sessionName}</div>
+                  <div style="font-size: 14px; font-weight: 500; margin-top: 2px;">Élève : ${prenom}</div>
+                  <div style="font-size: 22px; font-weight: 700; color: ${ncColor}; margin-top: 12px; background: #f9fafb; display: inline-block; padding: 4px 16px; border-radius: 20px; border: 0.5px solid #e5e7eb;">
+                    Note : ${c.note}/20
+                  </div>
+                </div>
+                
+                <div style="background: #f3f4f6; border-left: 4px solid #1d4ed8; padding: 12px 16px; border-radius: 0 8px 8px 0; margin-bottom: 24px;">
+                  <strong style="font-size: 13px; color: #1e3a8a;">Appréciation globale :</strong>
+                  <p style="margin-top: 4px; font-style: italic; color: #374151;">${appreciation}</p>
+                </div>
+
+                <div style="margin-bottom: 24px;">
+                  <h2 style="font-size: 15px; font-weight: 600; margin-bottom: 12px; border-bottom: 0.5px solid #e5e7eb; padding-bottom: 4px; color: #111827;">Corrigé Détaillé & Solutions</h2>
+                  <div style="line-height: 1.75;">${latexToHtml(corrLaTeX)}</div>
+                </div>
+
+                ${conseil ? `
+                <div style="background: #eff6ff; border: 0.5px solid #bfdbfe; padding: 12px 16px; border-radius: 8px; margin-top: 24px; color: #1e40af;">
+                  <strong style="font-size: 13px;">💡 Conseil personnalisé :</strong>
+                  <p style="margin-top: 4px; color: #1e3a8a;">${conseil}</p>
+                </div>` : ''}
+
+                <div style="margin-top: 40px; border-top: 0.5px solid #e5e7eb; padding-top: 16px; text-align: right; font-size: 12px; color: #6b7280;">
+                  F. Nocca — Professeur de Mathématiques
+                </div>
+              </div>
+            `;
+
+            document.body.appendChild(container);
+            const canvas = await window.html2canvas(container, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
+            document.body.removeChild(container);
+
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
-            const marg=15, pw=180, lh=5.5;
-            let y = marg;
+            const W = pdf.internal.pageSize.getWidth();
+            const H = pdf.internal.pageSize.getHeight();
+            const m = m => m; 
+            const marginSize = 15;
+            const iw = W - marginSize * 2;
+            let remaining = (canvas.height * iw) / canvas.width;
+            let srcY = 0;
 
-            const writeLine = (txt, opts={}) => {
-              if (!txt) return;
-              pdf.setFont("helvetica", opts.bold?"bold":"normal");
-              pdf.setFontSize(opts.size||10);
-              pdf.setTextColor(...(opts.color||[0,0,0]));
-              const lines = pdf.splitTextToSize(String(txt), pw);
-              lines.forEach(line => {
-                if (y > 280) { pdf.addPage(); y = marg; }
-                pdf.text(line, marg, y);
-                y += lh;
-              });
-              y += (opts.after||1);
-            };
-
-            writeLine(`Corrigé — ${prenom}`, {bold:true, size:14, after:3});
-            const nc = !isNaN(+c.note)?(+c.note>=10?[22,163,74]:[220,38,38]):[0,0,0];
-            writeLine(`Note : ${c.note}/20`, {bold:true, size:12, color:nc, after:3});
-            writeLine(appreciation, {size:10, color:[80,80,80], after:4});
-            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
-            writeLine(corrTexte, {size:10, after:4});
-            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
-            writeLine("Conseil :", {bold:true, size:10, after:1});
-            writeLine(conseil, {size:10, color:[30,64,175], after:4});
-            writeLine("Cordialement, F. Nocca", {size:9, color:[100,100,100]});
+            while (remaining > 0) {
+              const sliceH = Math.min(remaining, H - marginSize * 2);
+              const sc = document.createElement("canvas");
+              const ratio = canvas.width / iw;
+              sc.width = canvas.width;
+              sc.height = sliceH * ratio;
+              sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
+              if (srcY > 0) pdf.addPage();
+              pdf.addImage(sc.toDataURL("image/png"), "PNG", marginSize, marginSize, iw, sliceH);
+              srcY += sliceH;
+              remaining -= sliceH;
+            }
 
             const pdfArrayBuffer = pdf.output("arraybuffer");
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
             pdfFilename = `corrige_${prenom}.pdf`;
 
-          } catch(e) { console.error("Erreur PDF corrigé:", e); }
+          } catch(e) { console.error("Erreur PDF corrigé graphique:", e); }
           try {
             await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
           } catch(e) {
