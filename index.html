@@ -707,19 +707,36 @@
           setStatus(`Envoi à ${c.name}…`);
           const details=c.details?.map(d=>`• ${d.exercice} : ${d.obtenu}/${d.sur} — ${d.remarque}`).join("\n")||"";
           const prenom = c.name.split(" ")[0];
-          const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\nTu trouveras en pièce jointe ton corrigé personnalisé au format PDF avec les explications mathématiques détaillées.\n\nCordialement,\nF. Nocca`;
+          
+          // Remplacements robustes sans Regex dynamiques risquées
+          let appreciation = c.appreciation || "";
+          appreciation = appreciation.replace(/il\/elle/gi, "tu").replace(/l'élève/gi, "tu");
+          
+          let conseil = c.conseil || "";
+          conseil = conseil.replace(/il\/elle/gi, "tu").replace(/l'élève/gi, "tu");
+          
+          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\nTu trouveras en pièce jointe ton corrigé détaillé et rédigé contenant de jolies explications mathématiques.\n\nCordialement,\nF. Nocca`;
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
 
           try {
             setStatus(`Génération du corrigé LaTeX pour ${prenom}…`);
-            const parts = [{ text: `Génère le corrigé détaillé et personnalisé pour l'élève ${prenom} (qui a obtenu la note de ${c.note}/20).\nSUJET :\n${latexSrc||"[sujet fourni en PDF]"}\n\nDÉTAIL DES ERREURS DE L'ÉLÈVE :\n${(c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n")}\n\nCONSIGNE : Rédige un corrigé pas à pas des exercices où l'élève a échoué. Utilise impérativement la syntaxe LaTeX standard avec des dollars simples $...$ pour les formules en ligne (ex: $f(x) = x^2$) et des doubles dollars $$...$$ pour les équations centrées. Reste très pédagogue et encourageant.` }];
+            const parts = [{ text: `Génère le corrigé détaillé et personnalisé pour l'élève ${prenom} (qui a obtenu la note de ${c.note}/20).\nSUJET :\n${latexSrc||"[sujet fourni en PDF]"}\n\nDÉTAIL DES ERREURS DE L'ÉLÈVE :\n${(c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n")}\n\nCONSIGNE : Rédige un corrigé pas à pas structuré par question avec les explications mathématiques détaillées. Utilise impérativement la syntaxe LaTeX standard avec des dollars simples $...$ pour les formules en ligne (ex: $f(x) = x^2$) et des doubles dollars $$...$$ pour les équations centrées.\n\nCONSIGNES STRICTES DE FORMALISME :\n1. Ne commence pas par 'Chère ${prenom}' ou 'Cher'. Écris directement '${prenom}' au début.\n2. N'écris jamais 'Remarque pour ${prenom}', écris seulement 'Remarque'.\n3. Ne conclus jamais par 'Bon courage ! Ton professeur de mathématiques'.\n4. Ne signe pas par une formule automatique de fin de document.` }];
             
-            const corrTexte = await callGemini(apiKey, parts, "Tu es un professeur de mathématiques. Rédige ton retour en utilisant du LaTeX élégant pour toutes les expressions scientifiques.", false);
+            let corrTexte = await callGemini(apiKey, parts, "Tu es un professeur de mathématiques. Rédige ton corrigé personnalisé en utilisant du LaTeX élégant pour toutes les formules scientifiques.", false);
 
-            setStatus(`Rendu graphique du PDF pour ${prenom}…`);
+            // Remplacements de nettoyage de sécurité statiques (sans variables dans la RegExp)
+            corrTexte = corrTexte
+              .replace(/^\s*Chère?\s+\w+,?\s*/i, "")
+              .replace(/Remarque\s+pour\s+\w+/gi, "Remarque")
+              .replace(/Bon courage\s*!?\s*Ton professeur de mathématiques\.?/gi, "")
+              .replace(/Document généré automatiquement par.*/gi, "")
+              .trim();
+              
+            // Réinjection forcée du prénom propre au début pour garantir le formalisme
+            corrTexte = prenom + "\n\n" + corrTexte;
+
+            setStatus(`Rendu visuel du PDF pour ${prenom}…`);
             
             // Création d'un élément temporaire caché dans le DOM pour faire le rendu HTML + KaTeX
             const tempDiv = document.createElement("div");
@@ -733,7 +750,7 @@
             tempDiv.style.position = "absolute";
             tempDiv.style.left = "-9999px";
             
-            // Structure HTML interne du PDF
+            // Structure HTML interne du PDF avec les formules interprétées par latexToHtml
             tempDiv.innerHTML = `
               <h1 style="font-size: 18pt; margin-bottom: 5px; color: #1e3a8a;">Corrigé Personnel — ${prenom}</h1>
               <div style="font-size: 14pt; font-weight: bold; margin-bottom: 15px; color: ${+c.note >= 10 ? '#16a34a' : '#dc2626'};">
@@ -743,15 +760,15 @@
               <hr style="border: 0; border-top: 0.5px solid #d1d5db; margin-bottom: 20px;"/>
               <div style="margin-bottom: 20px;">${latexToHtml(corrTexte)}</div>
               <hr style="border: 0; border-top: 0.5px solid #d1d5db; margin-bottom: 20px;"/>
-              <div style="background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 15px; margin-bottom: 20px; borderRadius: 6px;">
+              <div style="background: #eff6ff; border-left: 4px solid #2563eb; padding: 10px 15px; margin-bottom: 20px; border-radius: 6px;">
                 <strong style="color: #1e40af; display: block; margin-bottom: 4px;">💡 Conseil de révision :</strong>
                 <span style="color: #1e3a8a;">${conseil}</span>
               </div>
-              <p style="font-size: 10pt; color: #6b7280; text-align: right; margin-top: 30px;">Cordialement, F. Nocca</p>
+              <p style="font-size: 11pt; font-weight: bold; color: #374151; text-align: right; margin-top: 30px; font-family: inherit;">F. Nocca</p>
             `;
             document.body.appendChild(tempDiv);
 
-            // Conversion du rendu HTML (avec KaTeX) en Canvas puis en PDF
+            // Conversion du rendu HTML (avec le style et KaTeX) en Canvas puis en PDF de haute qualité
             const canvas = await window.html2canvas(tempDiv, { scale: 2, useCORS: true });
             document.body.removeChild(tempDiv);
 
@@ -759,7 +776,7 @@
             const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
             const W = pdf.internal.pageSize.getWidth();
             const H = pdf.internal.pageSize.getHeight();
-            const iw = W - 30; // Marges de 15mm
+            const iw = W - 30; // Marges de 15mm de chaque côté
             let remaining = (canvas.height * iw) / canvas.width;
             let srcY = 0;
 
