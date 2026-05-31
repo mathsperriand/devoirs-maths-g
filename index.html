@@ -55,6 +55,8 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "📄 PDF", "✏️ Correction", "📬 Résultats"];
 
+    const DEFAULT_PROMPT = "Tu es un professeur de mathématiques expert et bienveillant. Analyse les copies avec soin. Valorise systématiquement les étapes de raisonnement et les débuts de calculs, même si la réponse finale est incorrecte. Si une réponse est partielle, attribue une note proportionnelle, n'attribue jamais 0 sans explication détaillée. Réponds EXCLUSIVEMENT en format JSON pur, sans aucune balise markdown ni texte introductif. Tutoie l'élève.";
+
     /* ── Gmail OAuth ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
     const GMAIL_API_KEY   = "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y";
@@ -455,9 +457,8 @@
       };
 
       /* Étape 2 */
-      const DEFAULT_PROMPT = "Tu es un correcteur de mathématiques expert. Tu sais déchiffrer avec précision toutes les écritures manuscrites sur papier quadrillé ou blanc. Réponds exclusivement en JSON pur, sans balises markdown. Tutoie l'élève de manière bienveillante et constructive.";
-      const [customPrompt, setCustomPromptRaw] = useState(() => load("customPrompt", DEFAULT_PROMPT));
-      const setCustomPrompt = v => { setCustomPromptRaw(v); persist("customPrompt", v); };
+      const [customPrompt, setCustomPrompt]  = useState(() => load("customPrompt", DEFAULT_PROMPT));
+      const handleCustomPromptChange = v => { setCustomPrompt(v); persist("customPrompt", v); };
 
       const [answers,     setAnswersRaw]     = useState(() => load("answers", {}));
       const setAnswers = v => { setAnswersRaw(v); persist("answers",v); };
@@ -569,6 +570,7 @@
         setBusy(false);setStatus("");
       };
 
+      /* LOGIQUE OPTIMISÉE : Analyse séquentielle et robuste face aux formats mixtes */
       const correctFromPdf = async () => {
         if (!copiesPdfs.length || !apiKey) return;
         setBusy(true);
@@ -586,7 +588,7 @@
               parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
             }
             parts.push({ inlineData: { mimeType: "application/pdf", data: currentPdf.b64 } });
-            parts.push({ text: `Fichier de copie analysé : ${currentPdf.name}\n\nListe des élèves attendus :\n${studentList}\n\nSUJET${subjectMode === "upload" ? " (voir PDF joint)" : ":\n" + latexSrc}\n\nCORRIGÉ :\n${corrRef || "[utilise tes connaissances]"}\n\nCONSIGNES D'ANALYSE MULTIMODALE :\n1. Ce document contient la copie d'un ou plusieurs élèves.\n2. L'écriture peut être dactylographiée ou manuscrite (parfois désordonnée ou difficile à lire).\n3. L'élève peut avoir écrit sur des feuilles à carreaux (Seyes ou petits carreaux). Fais complètement abstraction des lignes géométriques du fond pour ne pas confondre le quadrillage avec des symboles mathématiques.\n4. Déchiffre soigneusement l'écriture manuscrite et identifie précisément quel élève de la liste a rendu ce travail.\n\nIMPORTANT : Tutoie l'élève (tu, ton, ta). Ne dis pas 'Cher/Chère [Nom]', adresse-toi directement à lui par son prénom seul.\n\nRetourne exclusivement un tableau JSON contenant les corrections pour ce fichier : [{"name":"Nom Prénom","note":14,"appreciation":"[Prénom], tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]` });
+            parts.push({ text: `Fichier de copie analysé : ${currentPdf.name}\n\nListe des élèves attendus :\n${studentList}\n\nSUJET${subjectMode === "upload" ? " (voir PDF joint)" : ":\n" + latexSrc}\n\nCORRIGÉ :\n${corrRef || "[utilise tes connaissances]"}\n\nCONSIGNES D'ANALYSE MULTIMODALE :\n1. Ce document contient la copie d'un ou plusieurs élèves.\n2. L'écriture peut être dactylographiée ou manuscrite (parfois désordonnée ou difficile à lire).\n3. L'élève peut avoir écrit sur des feuilles à carreaux (Seyes ou petits carreaux). Fais complètement abstraction des lignes géométriques du fond pour ne pas confondre le quadrillage avec des symboles mathématiques (fractions, barres, indices, exposants).\n4. Déchiffre soigneusement l'écriture manuscrite et identifie précisément quel élève de la liste a rendu ce travail.\n\nIMPORTANT : Tutoie l'élève (tu, ton, ta) et utilise son prénom seul dans l'appréciation et le conseil.\n\nRetourne exclusivement un tableau JSON contenant les corrections pour ce fichier : [{"name":"Nom Prénom","note":14,"appreciation":"[Prénom], tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]` });
 
             const raw = await callGemini(apiKey, parts, customPrompt, true);
             
@@ -630,7 +632,7 @@
           if(!ans){results.push({...s,skipped:true});continue;}
           setStatus(`Correction de ${s.name}…`);
           try{
-            const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil sans formules trop familières du type Chère/Cher.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
+            const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
             const raw = await callGemini(apiKey, parts, customPrompt, true);
             results.push({...s,...JSON.parse(raw.trim())});
           }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
@@ -717,22 +719,9 @@
               "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
               "DÉTAIL :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
               "Retourne le corrigé en texte simple lisible. Pour les formules mathématiques, écris-les de façon lisible : f(x) = 2x+3, racine(2), x^2, etc.\n" +
-              "Structure : Exercice 1, question par question avec la solution complète.\n\n" +
-              "CONSIGNES STRICTES DE FORMALISME ET STYLE :\n" +
-              "1. Ne commence JAMAIS par 'Chère " + prenom + "' ou 'Cher'. Écris directement '" + prenom + "' seul au tout début.\n" +
-              "2. N'écris jamais l'en-tête 'Remarque pour " + prenom + "'. Utilise exclusivement le mot 'Remarque'.\n" +
-              "3. Ne conclus JAMAIS par 'Bon courage ! Ton professeur de mathématiques'.\n" +
-              "4. N'ajoute aucun en-tête ni aucun pied de page automatique." }];
+              "Structure : Exercice 1, question par question avec la solution complète." }];
             
-            let corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte direct, formules en notation simple, sans formule de politesse introductive ni conclusion automatique.", false);
-
-            // Nettoyage de sécurité additionnel par Regex (anti-hallucination IA)
-            corrTexte = corrTexte
-              .replace(new RegExp(`^\\s*Chère?\\s+${prenom},?\\s*`, 'gi'), `${prenom}\n\n`)
-              .replace(new RegExp(`Remarque\\s+pour\\s+${prenom}`, 'gi'), "Remarque")
-              .replace(/Bon courage\s*!?\s*Ton professeur de mathématiques\.?/gi, "")
-              .replace(/Document généré automatiquement par.*/gi, "")
-              .trim();
+            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte lisible, formules en notation simple.", false);
 
             setStatus(`Mise en page PDF pour ${prenom}…`);
             const {jsPDF} = window.jspdf;
@@ -754,16 +743,16 @@
               y += (opts.after||1);
             };
 
-            writeLine(`Corrigé détaillé — ${prenom}`, {bold:true, size:14, after:3});
+            writeLine(`Corrigé — ${prenom}`, {bold:true, size:14, after:3});
             const nc = !isNaN(+c.note)?(+c.note>=10?[22,163,74]:[220,38,38]):[0,0,0];
             writeLine(`Note : ${c.note}/20`, {bold:true, size:12, color:nc, after:3});
             writeLine(appreciation, {size:10, color:[80,80,80], after:4});
             pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
-            writeLine(corrTexte, {size:10, after:5});
+            writeLine(corrTexte, {size:10, after:4});
             pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
             writeLine("Conseil :", {bold:true, size:10, after:1});
-            writeLine(conseil, {size:10, color:[30,64,175], after:5});
-            writeLine("F. Nocca", {bold:true, size:10, color:[50,50,50]});
+            writeLine(conseil, {size:10, color:[30,64,175], after:4});
+            writeLine("Cordialement, F. Nocca", {size:9, color:[100,100,100]});
 
             const pdfArrayBuffer = pdf.output("arraybuffer");
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
@@ -884,7 +873,7 @@
                   <span style={{ fontSize:20 }}>✓</span>
                   <div>
                     <div style={{ fontSize:14,fontWeight:500 }}>Sujet chargé : {upSubPdfName}</div>
-                    <div style={{ fontSize:12,color:"#6b7280" }}>Utilisé par l'IA à l'étape Correction.</div>
+                    <div style={{ fontSize:12,color:"#6b7280" }}>Utilisé by l'IA à l'étape Correction.</div>
                   </div>
                 </div>
               </Card>
@@ -916,64 +905,68 @@
           </>)}
 
           {step===2&&(<>
+            {/* Zone de modification de prompt : rendue visible en permanence à l'étape 2 */}
+            <Card>
+              <Field label="⚙️ Consignes de comportement de l'IA (Prompt système)">
+                <textarea 
+                  value={customPrompt} 
+                  onChange={e=>handleCustomPromptChange(e.target.value)}
+                  placeholder="Instructions de notation..."
+                  style={{ minHeight:110, fontSize:12, lineHeight:1.5 }}
+                />
+              </Field>
+              <p style={{ fontSize:11, color:"#6b7280", marginTop:4 }}>
+                * Important : La consigne "Réponds exclusivement en format JSON" est impérative pour que l'interface puisse extraire et afficher correctement les notes.
+              </p>
+            </Card>
+
             {corrections.length===0&&(
-              <>
-                <Card>
-                  <Field label="⚙️ Consignes de comportement de l'IA (Prompt modifiable avant correction)">
-                    <textarea value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)}
-                      placeholder="Ex: Tu es un correcteur strict, valorise les étapes de calcul..."
-                      style={{ minHeight:100,fontFamily:"inherit",fontSize:12,lineHeight:1.5 }}/>
-                  </Field>
-                  <p style={{ fontSize:11,color:"#6b7280",marginTop:4 }}>Vous pouvez modifier ces règles ou ajouter des consignes de notation spécifiques ci-dessus.</p>
-                </Card>
+              <Card>
+                <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
 
-                <Card>
-                  <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
+                <div onDragOver={e=>e.preventDefault()}
+                  onDrop={e=>{e.preventDefault();addCopiesPdf(e.dataTransfer.files);}}
+                  onClick={()=>document.getElementById("copies-pdf2").click()}
+                  style={{ border:"1.5px dashed #d1d5db",borderRadius:8,padding:"1.5rem",textAlign:"center",cursor:"pointer",marginBottom:10,background:copiesPdfs.length?"#f0fdf4":"#f9fafb" }}>
+                  <input id="copies-pdf2" type="file" accept="application/pdf" multiple style={{ display:"none" }}
+                    onChange={e=>addCopiesPdf(e.target.files)}/>
+                  {copiesPdfs.length===0
+                    ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez un ou plusieurs PDFs ici ou cliquez</span>
+                    : <span style={{ color:"#16a34a",fontSize:13 }}>✓ {copiesPdfs.length} fichier{copiesPdfs.length>1?"s":""} chargé{copiesPdfs.length>1?"s":""}</span>
+                  }
+                </div>
 
-                  <div onDragOver={e=>e.preventDefault()}
-                    onDrop={e=>{e.preventDefault();addCopiesPdf(e.dataTransfer.files);}}
-                    onClick={()=>document.getElementById("copies-pdf2").click()}
-                    style={{ border:"1.5px dashed #d1d5db",borderRadius:8,padding:"1.5rem",textAlign:"center",cursor:"pointer",marginBottom:10,background:copiesPdfs.length?"#f0fdf4":"#f9fafb" }}>
-                    <input id="copies-pdf2" type="file" accept="application/pdf" multiple style={{ display:"none" }}
+                {copiesPdfs.length>0&&(
+                  <div style={{ marginBottom:10 }}>
+                    {copiesPdfs.map((p,i)=>(
+                      <div key={i} style={{ display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"4px 8px",background:"#f3f4f6",borderRadius:6,marginBottom:4 }}>
+                        <span>📄 {p.name}</span>
+                        <span style={{ color:"#dc2626",cursor:"pointer",padding:"0 4px" }}
+                          onClick={()=>setCopiesPdfs(prev=>prev.filter((_,j)=>j!==i))}>✕</span>
+                      </div>
+                    ))}
+                    <button onClick={()=>document.getElementById("copies-pdf-add").click()}
+                      style={{ width:"100%",background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db",fontSize:12,marginTop:4 }}>
+                      ➕ Ajouter un PDF (copie en retard…)
+                    </button>
+                    <input id="copies-pdf-add" type="file" accept="application/pdf" multiple style={{ display:"none" }}
                       onChange={e=>addCopiesPdf(e.target.files)}/>
-                    {copiesPdfs.length===0
-                      ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez un ou plusieurs PDFs ici ou cliquez</span>
-                      : <span style={{ color:"#16a34a",fontSize:13 }}>✓ {copiesPdfs.length} fichier{copiesPdfs.length>1?"s":""} chargé{copiesPdfs.length>1?"s":""}</span>
-                    }
                   </div>
+                )}
 
-                  {copiesPdfs.length>0&&(
-                    <div style={{ marginBottom:10 }}>
-                      {copiesPdfs.map((p,i)=>(
-                        <div key={i} style={{ display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"4px 8px",background:"#f3f4f6",borderRadius:6,marginBottom:4 }}>
-                          <span>📄 {p.name}</span>
-                          <span style={{ color:"#dc2626",cursor:"pointer",padding:"0 4px" }}
-                            onClick={()=>setCopiesPdfs(prev=>prev.filter((_,j)=>j!==i))}>✕</span>
-                        </div>
-                      ))}
-                      <button onClick={()=>document.getElementById("copies-pdf-add").click()}
-                        style={{ width:"100%",background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db",fontSize:12,marginTop:4 }}>
-                        ➕ Ajouter un PDF (copie en retard…)
-                      </button>
-                      <input id="copies-pdf-add" type="file" accept="application/pdf" multiple style={{ display:"none" }}
-                        onChange={e=>addCopiesPdf(e.target.files)}/>
-                    </div>
-                  )}
-
-                  {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?status:"🤖 Corriger les copies une à une avec Gemini"}</button>}
-                  <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou saisir manuellement —</div>
-                  {students.map(s=>(
-                    <Card key={s.id}>
-                      <SectionHead title={s.name}/>
-                      <Field label="Réponses de l'élève">
-                        <textarea value={answers[s.id]||""} onChange={e=>setAnswers({...answers,[s.id]:e.target.value})}
-                          placeholder="Saisissez ou résumez les réponses…" style={{ minHeight:80,fontFamily:"monospace",fontSize:12 }}/>
-                      </Field>
-                    </Card>
-                  ))}
-                  {hasAnswers&&<button disabled={busy||!apiKey} onClick={correctAll} style={{ width:"100%" }}>{busy?status:"🤖 Corriger toutes les copies manuelles ↗"}</button>}
-                </Card>
-              </>
+                {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?status:"🤖 Corriger les copies une à une avec Gemini"}</button>}
+                <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou saisir manuellement —</div>
+                {students.map(s=>(
+                  <Card key={s.id}>
+                    <SectionHead title={s.name}/>
+                    <Field label="Réponses de l'élève">
+                      <textarea value={answers[s.id]||""} onChange={e=>setAnswers({...answers,[s.id]:e.target.value})}
+                        placeholder="Saisissez ou résumez les réponses…" style={{ minHeight:80,fontFamily:"monospace",fontSize:12 }}/>
+                    </Field>
+                  </Card>
+                ))}
+                {hasAnswers&&<button disabled={busy||!apiKey} onClick={correctAll} style={{ width:"100%" }}>{busy?status:"🤖 Corriger toutes les copies manuelles ↗"}</button>}
+              </Card>
             )}
             {corrections.length>0&&(<>
               {students.map(s=>{
