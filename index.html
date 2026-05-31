@@ -250,28 +250,15 @@
 
     function latexToHtml(src) {
       if (!window.katex) return `<pre>${src}</pre>`;
-      
-      let html = src;
-
-      // 1. Traitement correct des blocs centrés $$ ... $$ (Correction de la Regex)
-      html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
-        try { 
-          return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m.trim(), { displayMode: true, throwOnError: false })}</div>`; 
-        } catch (e) { 
-          return `<div>$$${m}$$</div>`; 
-        }
-      });
-
-      // 2. Traitement des formules en ligne $ ... $
-      html = html.replace(/\$([^\$\n]+?)\$/g, (_, m) => {
-        try { 
-          return window.katex.renderToString(m.trim(), { displayMode: false, throwOnError: false }); 
-        } catch (e) { 
-          return `$${m}$`; 
-        }
-      });
-
-      // 3. Traitement des structures de mise en page LaTeX courantes
+      let html = src
+        .replace(/\$$([\s\S]+?)\$$/g, (_, m) => {
+          try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
+          catch { return `<div>$$${m}$$</div>`; }
+        })
+        .replace(/\$([^\$\n]+?)\$/g, (_, m) => {
+          try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
+          catch { return `$${m}$`; }
+        });
       html = html
         .replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, '<div style="text-align:center">$1</div>')
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
@@ -288,13 +275,10 @@
         .replace(/\\\\(\[[\d.]+pt\])?/g, '<br/>')
         .replace(/\\vspace\{[^}]+\}/g, '<div style="height:10px"></div>')
         .replace(/\\newline/g, '<br/>')
-        .replace(/\\hline/g, '');
-
-      // On supprime les macros de mise en page inconnues, mais SANS toucher au code interne de KaTeX
-      html = html.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1');
-      
-      // 4. Gestion des sauts de ligne de texte
-      html = html.replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
+        .replace(/\\hline/g, '')
+        .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')
+        .replace(/\\[a-zA-Z]+/g, '')
+        .replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
       return '<p style="margin:6px 0">' + html + '</p>';
     }
 
@@ -792,6 +776,7 @@
               sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
               if (srcY > 0) pdf.addPage();
               
+              // Injection de l'image du canvas avec forte compression JPEG (Option B) pour un PDF plume
               pdf.addImage(sc.toDataURL("image/jpeg", 0.75), "JPEG", m, m, iw, sliceH, undefined, 'FAST');
               srcY += sliceH; remaining -= sliceH;
             }
