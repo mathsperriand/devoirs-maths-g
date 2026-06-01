@@ -95,6 +95,7 @@
     }
 
     async function mergePdfs(pdfList) {
+      if (!pdfList || pdfList.length === 0) throw new Error("Aucun PDF à fusionner.");
       if (pdfList.length === 1) return pdfList[0].b64;
       const { PDFDocument } = window.PDFLib;
       const merged = await PDFDocument.create();
@@ -179,7 +180,7 @@
         ? buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename)
         : buildMime(to, subject, body);
       
-      console.log("Tentative d'envoi vers :", to);
+      console.log("[Gmail] Tentative d'envoi vers :", to);
       
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
@@ -193,11 +194,11 @@
       const data = await res.json();
       
       if (!res.ok) {
-        console.error("ERREUR GMAIL DÉTAILLÉE :", data);
+        console.error("[Gmail] ERREUR GMAIL DÉTAILLÉE :", data);
         throw new Error(data.error?.message || "Erreur inconnue lors de l'envoi");
       }
       
-      console.log("Succès, ID du message :", data.id);
+      console.log("[Gmail] Succès, ID du message :", data.id);
       return data;
     }
 
@@ -228,33 +229,42 @@
       return "s_" + Date.now();
     }
 
-    /* ── API Google Gemini ── */
-    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false) {
+    /* ── API Google Gemini (AVEC RETRY ROBUSTE) ── */
+    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, retries = 3) {
+      if (!apiKey) throw new Error("Clé API manquante");
+      
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-      const body = {
-        contents: [{ parts: parts }]
-      };
       
-      const generationConfig = {};
-      if (jsonMode) {
-        generationConfig.responseMimeType = "application/json";
-      }
-      if (Object.keys(generationConfig).length > 0) {
-        body.generationConfig = generationConfig;
-      }
-      
-      if (systemInstruction) {
-        body.systemInstruction = { parts: [{ text: systemInstruction }] };
-      }
+      for (let i = 0; i < retries; i++) {
+        try {
+          const body = { contents: [{ parts: parts }] };
+          if (jsonMode) body.generationConfig = { responseMimeType: "application/json" };
+          if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            if (res.status === 503 || res.status === 429) {
+                throw new Error("Surcharge temporaire des serveurs Google.");
+            }
+            throw new Error(errData.error?.message || `Erreur HTTP ${res.status}`);
+          }
+
+          const data = await res.json();
+          if (data.error) throw new Error(data.error.message);
+          return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+        } catch (e) {
+          console.warn(`[Gemini] Tentative ${i + 1}/${retries} échouée : ${e.message}`);
+          if (i === retries - 1) throw e; // Renvoie l'erreur si c'est la dernière tentative
+          await new Promise(r => setTimeout(r, 2000 * (i + 1))); // Attente progressive
+        }
+      }
     }
 
     /* ── Extraction JSON stricte ── */
@@ -275,24 +285,13 @@
 
     function latexToHtml(src) {
       if (!window.katex) return `<pre>${src}</pre>`;
-      
       let html = src;
       html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
-        try { 
-          return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m.trim(), { displayMode: true, throwOnError: false })}</div>`; 
-        } catch (e) { 
-          return `<div>$$${m}$$</div>`; 
-        }
+        try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m.trim(), { displayMode: true, throwOnError: false })}</div>`; } catch (e) { return `<div>$$${m}$$</div>`; }
       });
-
       html = html.replace(/\$([^\$\n]+?)\$/g, (_, m) => {
-        try { 
-          return window.katex.renderToString(m.trim(), { displayMode: false, throwOnError: false }); 
-        } catch (e) { 
-          return `$${m}$`; 
-        }
+        try { return window.katex.renderToString(m.trim(), { displayMode: false, throwOnError: false }); } catch (e) { return `$${m}$`; }
       });
-
       html = html
         .replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, '<div style="text-align:center">$1</div>')
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
@@ -301,16 +300,13 @@
         .replace(/\{\\Large\\textbf\{([^}]+)\}\}/g, '<h1 style="font-size:16pt;text-align:center;margin:12px 0">$1</h1>')
         .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:13pt;margin-top:20px;margin-bottom:8px">$1</h2>')
         .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:12pt;margin-top:12px">$1</h3>')
-        .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) =>
-          `<ol style="padding-left:24px;margin:8px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
-        .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) =>
-          `<ul style="padding-left:24px;margin:8px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
+        .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) => `<ol style="padding-left:24px;margin:8px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
+        .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) => `<ul style="padding-left:24px;margin:8px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
         .replace(/\\hfill/g, '<span style="float:right">')
         .replace(/\\\\(\[[\d.]+pt\])?/g, '<br/>')
         .replace(/\\vspace\{[^}]+\}/g, '<div style="height:10px"></div>')
         .replace(/\\newline/g, '<br/>')
         .replace(/\\hline/g, '');
-
       html = html.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1');
       html = html.replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
       return '<p style="margin:6px 0">' + html + '</p>';
@@ -523,8 +519,9 @@
         const r = new FileReader(); r.onload = e => cb(e.target.result.split(",")[1]); r.readAsDataURL(file);
       };
 
+      /* FIX : Extraction asynchrone sécurisée hors du setState React */
       const addCopiesPdf = (files) => {
-        const arr = Array.from(files).filter(f=>f.type==="application/pdf");
+        const arr = Array.from(files).filter(f => f.type === "application/pdf");
         if (!arr.length) return;
         
         let loaded = 0;
@@ -536,17 +533,17 @@
             loaded++;
             
             if (loaded === arr.length) {
-              setCopiesPdfs(prev => {
-                extractNames(newPdfs);
-                return [...prev, ...newPdfs];
-              });
+              setCopiesPdfs(prev => [...prev, ...newPdfs]);
+              extractNames(newPdfs); // Appel séparé de l'état
             }
           });
         });
       };
 
       const extractNames = async (pdfList) => {
-        if (!pdfList || !pdfList.length || !apiKey) return;
+        if (!apiKey) { alert("Clé API manquante pour l'extraction."); return; }
+        if (!pdfList || !pdfList.length) return;
+        
         setExtracting(true);
         try {
           let b64Data = pdfList[0].b64;
@@ -577,8 +574,9 @@
         } catch(e) { 
           console.error("Erreur d'extraction :", e); 
           alert("Erreur lors de l'extraction IA : " + e.message); 
+        } finally {
+          setExtracting(false);
         }
-        setExtracting(false);
       };
 
       const handleSubjectPdf = (file) => {
@@ -588,7 +586,8 @@
       };
 
       const generateSubject = async () => {
-        if (!consignes.trim()||!apiKey) return;
+        if (!apiKey) { alert("Clé API manquante."); return; }
+        if (!consignes.trim()) return;
         setBusy(true); setStatus("Génération du sujet avec Gemini…");
         try {
           const parts = [{ text: `Génère un sujet de mathématiques en LaTeX selon ces consignes :\n${consignes}\n\nRetourne UNIQUEMENT le contenu LaTeX (sans \\documentclass ni \\begin{document}), puis la correction séparée par ---CORRECTION--- :\n\n\\begin{center}\n{\\Large\\textbf{Devoir de mathématiques}}\\\\[4pt]\n{\\normalsize [Niveau] \\hfill Durée : 1h}\n\\end{center}\n\\vspace{8pt}\n\\section*{Exercice 1 --- [titre] \\hfill (X points)}\n\\begin{enumerate}\n  \\item Énoncé avec $f(x) = ...$\n\\end{enumerate}\n\n---CORRECTION---\n\\section*{Corrigé exercice 1}\n...` }];
@@ -596,8 +595,12 @@
           const sep = res.indexOf("---CORRECTION---");
           setLatexSrc(sep>0?res.slice(0,sep).trim():res);
           setCorrRef(sep>0?res.slice(sep+16).trim():"");
-        } catch(e) { setStatus("Erreur : "+e.message); }
-        setBusy(false); setStatus("");
+        } catch(e) { 
+            console.error(e);
+            alert("Erreur de génération : " + e.message); 
+        } finally {
+            setBusy(false); setStatus("");
+        }
       };
 
       const downloadSubjectPdf = async () => {
@@ -620,19 +623,40 @@
             srcY+=sliceH;remaining-=sliceH;
           }
           pdf.save("sujet_maths.pdf");
-        } catch(e){setStatus("Erreur : "+e.message);}
-        setBusy(false);setStatus("");
+        } catch(e){
+            console.error(e);
+            alert("Erreur de téléchargement PDF : " + e.message);
+        } finally {
+            setBusy(false);setStatus("");
+        }
       };
 
+      /* FIX : Gestion stricte des erreurs pour empêcher le blocage muet */
       const correctFromPdf = async () => {
-        if (!copiesPdfs.length||!apiKey) return;
-        setBusy(true);setStatus("Fusion des PDFs…");
+        if (!apiKey) { 
+            alert("⚠️ Action bloquée : Votre clé API Gemini est manquante."); 
+            return; 
+        }
+        if (!copiesPdfs || copiesPdfs.length === 0) { 
+            alert("⚠️ Action bloquée : Aucun fichier PDF n'est chargé pour la correction."); 
+            return; 
+        }
+
+        setBusy(true);
+        setStatus("Fusion des PDFs…");
         let mergedB64;
-        try { mergedB64 = await mergePdfs(copiesPdfs); }
-        catch(e) { setStatus("Erreur fusion PDF : "+e.message); setBusy(false); return; }
-        setStatus("Lecture et correction par Gemini…");
-        const studentList=students.map(s=>`- ${s.name}`).join("\n");
         
+        try { 
+            mergedB64 = await mergePdfs(copiesPdfs); 
+        } catch(e) { 
+            console.error(e);
+            alert("❌ Échec de la fusion des PDF : " + e.message); 
+            setBusy(false); setStatus(""); 
+            return; 
+        }
+
+        setStatus("Lecture et correction par Gemini…");
+        const studentList = students.map(s=>`- ${s.name}`).join("\n");
         let currentCorrections = students.map(s => ({ ...s, skipped: true }));
 
         try {
@@ -681,15 +705,17 @@
               });
           }
           setCorrections(currentCorrections);
-        } catch(e){
-          console.error("Erreur lors de la correction:", e);
-          setStatus("Erreur lors de l'analyse : vérifiez la console.");
+        } catch(e) {
+          console.error("[Correction API] Erreur lors de la correction:", e);
+          alert("❌ Erreur de l'Intelligence Artificielle lors de la correction : " + e.message);
+        } finally {
+          setBusy(false);
+          setStatus("");
         }
-        setBusy(false);setStatus("");
       };
 
       const correctAll = async () => {
-        if(!apiKey)return;
+        if(!apiKey) { alert("Clé API manquante"); return; }
         setBusy(true);const results=[];
         for(const s of students){
           const ans=(answers[s.id]||"").trim();
@@ -700,7 +726,10 @@
             let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
             raw = extractJson(raw);
             results.push({...s,...JSON.parse(raw)});
-          }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
+          }catch(e){
+            console.error(`Erreur pour ${s.name}`, e);
+            results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});
+          }
         }
         setCorrections(results);setBusy(false);setStatus("");
       };
@@ -764,6 +793,7 @@
           await getGmailToken();
         } catch(e) {
           setStatus("❌ " + (e.message || e) + " — Réessayez.");
+          alert("Erreur de connexion Gmail : " + e.message);
           setBusy(false); return;
         }
         let errors = [];
@@ -880,7 +910,7 @@
               scale: 2, 
               useCORS: true, 
               backgroundColor: "#ffffff",
-              logging: true 
+              logging: false 
             });
             
             if (canvas.width === 0 || canvas.height === 0) {
@@ -926,7 +956,12 @@
           }
         }
         setMailsDone(true); setBusy(false);
-        setStatus(errors.length ? `⚠️ Échec pour : ${errors.join(", ")}` : "");
+        if (errors.length) {
+            alert(`⚠️ Échec d'envoi pour : ${errors.join(", ")}`);
+            setStatus(`⚠️ Échec pour : ${errors.join(", ")}`);
+        } else {
+            setStatus("");
+        }
       };
 
       return (
@@ -1107,7 +1142,7 @@
                   </div>
                 )}
 
-                {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?status:"🤖 Corriger depuis les PDFs avec Gemini ↗"}</button>}
+                {copiesPdfs.length>0&&<button disabled={busy} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?status:"🤖 Corriger depuis les PDFs avec Gemini ↗"}</button>}
                 <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou saisir manuellement —</div>
                 {students.map(s=>(
                   <Card key={s.id}>
@@ -1118,7 +1153,7 @@
                     </Field>
                   </Card>
                 ))}
-                {hasAnswers&&<button disabled={busy||!apiKey} onClick={correctAll} style={{ width:"100%" }}>{busy?status:"🤖 Corriger toutes les copies ↗"}</button>}
+                {hasAnswers&&<button disabled={busy} onClick={correctAll} style={{ width:"100%" }}>{busy?status:"🤖 Corriger toutes les copies ↗"}</button>}
               </Card>
             )}
             {corrections.length>0&&(<>
@@ -1173,7 +1208,7 @@
                         const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
                         setCorrections(prev=>[...prev,{...(existingStudent||{id:Date.now(),name:newC.name,email:""}),...newC}]);
                       }
-                    } catch(err){console.error(err);}
+                    } catch(err){console.error(err); alert("Erreur sur la copie en retard : " + err.message);}
                     setBusy(false);setStatus("");
                   });
                 }}/>
