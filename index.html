@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Gestionnaire de devoirs — Maths (Gemini)</title>
+  <title>Gestionnaire de devoirs — Maths (Gemini Pro)</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -100,8 +100,14 @@
       const { PDFDocument } = window.PDFLib;
       const merged = await PDFDocument.create();
       for (const p of pdfList) {
-        const bytes = Uint8Array.from(atob(p.b64), c => c.charCodeAt(0));
-        const doc   = await PDFDocument.load(bytes);
+        // FIX MEMOIRE : Boucle for sécurisée au lieu de map/from pour éviter le Call Stack Exceeded sur les gros PDF
+        const binaryString = atob(p.b64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        const doc = await PDFDocument.load(bytes);
         const pages = await merged.copyPages(doc, doc.getPageIndices());
         pages.forEach(pg => merged.addPage(pg));
       }
@@ -124,13 +130,12 @@
       return matched ? matched.join("\r\n") : "";
     }
 
-    /* ── Encodage Mime sécurisé (Corrigé V3.1) ── */
+    /* ── Encodage Mime sécurisé (Accents OK) ── */
     function encodeBase64UTF8(str) {
       return btoa(unescape(encodeURIComponent(str)));
     }
 
     function b64urlMime(asciiStr) {
-      // FIX: Gestion parfaite des accents pour empêcher le crash d'envoi.
       const bytes = new TextEncoder().encode(asciiStr);
       let binary = "";
       for (let i = 0; i < bytes.length; i++) {
@@ -148,7 +153,7 @@
         "Content-Type: text/plain; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        wrapBase64(encodeBase64UTF8(body)) // FIX: Découpage réglementaire
+        wrapBase64(encodeBase64UTF8(body))
       ].join("\r\n");
       return b64urlMime(msg);
     }
@@ -166,7 +171,7 @@
         "Content-Type: text/plain; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        wrapBase64(encodeBase64UTF8(body)), // FIX: Découpage réglementaire
+        wrapBase64(encodeBase64UTF8(body)),
         "",
         `--${boundary}`,
         `Content-Type: application/pdf; name="${pdfFilename}"`,
@@ -200,11 +205,8 @@
       const data = await res.json();
       
       if (!res.ok) {
-        console.error("[Gmail] ERREUR GMAIL DÉTAILLÉE :", data);
         throw new Error(data.error?.message || "Erreur inconnue lors de l'envoi");
       }
-      
-      console.log("[Gmail] Succès, ID du message :", data.id);
       return data;
     }
 
@@ -235,11 +237,12 @@
       return "s_" + Date.now();
     }
 
-    /* ── API Google Gemini (AVEC RETRY ROBUSTE) ── */
+    /* ── API Google Gemini (PRO 1.5 + RETRY ROBUSTE) ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, retries = 3) {
       if (!apiKey) throw new Error("Clé API manquante");
       
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+      // FIX MODEL : Passage explicite au modèle PRO pour éviter les hallucinations JSON sur les PDF
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
       
       for (let i = 0; i < retries; i++) {
         try {
@@ -268,13 +271,14 @@
         } catch (e) {
           console.warn(`[Gemini] Tentative ${i + 1}/${retries} échouée : ${e.message}`);
           if (i === retries - 1) throw e;
-          await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+          await new Promise(r => setTimeout(r, 2500 * (i + 1))); // Attente progressive
         }
       }
     }
 
     /* ── Extraction JSON stricte ── */
     function extractJson(text) {
+      if (!text) return "";
       const matchArray = text.match(/\[[\s\S]*\]/);
       if (matchArray) return matchArray[0];
       const matchObj = text.match(/\{[\s\S]*\}/);
@@ -526,7 +530,8 @@
       };
 
       const addCopiesPdf = (files) => {
-        const arr = Array.from(files).filter(f => f.type === "application/pdf");
+        // FIX IMPORT : Tolérance pour le type MIME ou l'extension .pdf
+        const arr = Array.from(files).filter(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
         if (!arr.length) return;
         
         let loaded = 0;
@@ -558,12 +563,19 @@
 
           const parts = [
             { inlineData: { mimeType: "application/pdf", data: b64Data } },
-            { text: "Extrais le nom complet et l'email de chaque élève présent dans ces documents. Retourne STRICTEMENT un tableau JSON plat, par exemple : [{\"name\":\"Nom Prénom\",\"email\":\"\"}]. Ne renvoie aucun objet parent." }
+            { text: "Extrais le nom complet et l'email de chaque élève présent dans ces documents. Retourne STRICTEMENT un tableau JSON plat, par exemple : [{\"name\":\"Nom Prénom\",\"email\":\"\"}]. Ne renvoie aucun objet parent, pas de texte autour." }
           ];
+          
           let raw = await callGemini(apiKey, parts, "Tu es un extracteur de données strict. Ne renvoie qu'un tableau JSON pur.", true);
           
-          raw = extractJson(raw);
-          const parsed = JSON.parse(raw);
+          let parsed;
+          try {
+             raw = extractJson(raw);
+             parsed = JSON.parse(raw);
+          } catch (errJson) {
+             console.error("Format JSON IA invalide:", raw);
+             throw new Error("L'IA n'a pas réussi à formater les données proprement (JSON invalide). Réessayez.");
+          }
           
           let arr = [];
           if (Array.isArray(parsed)) {
@@ -575,17 +587,20 @@
           if (arr.length > 0) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
             setStudentsRaw(prev => prev ? prev + "\n" + formatted : formatted);
+          } else {
+             alert("L'IA n'a trouvé aucun nom clair sur ce document.");
           }
         } catch(e) { 
           console.error("Erreur d'extraction :", e); 
-          alert("Erreur lors de l'extraction IA : " + e.message); 
+          alert("Erreur lors de l'extraction : " + e.message); 
         } finally {
           setExtracting(false);
         }
       };
 
       const handleSubjectPdf = (file) => {
-        if (!file||file.type!=="application/pdf") return;
+        if (!file) return;
+        if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) return;
         setUpSubPdfName(file.name);
         readPdf(file, b64 => setUpSubPdf(b64));
       };
@@ -730,7 +745,6 @@
             let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
             raw = extractJson(raw);
             results.push({...s,...JSON.parse(raw)});
-            await new Promise(r => setTimeout(r, 2000)); // Pause anti 503
           }catch(e){
             console.error(`Erreur pour ${s.name}`, e);
             results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});
@@ -794,11 +808,10 @@
       const sendResults = async () => {
         setBusy(true);
         try {
-          setStatus("Connexion Gmail (Vérifiez la boîte des éléments envoyés du compte que vous allez choisir ici)…");
+          setStatus("Connexion Gmail — choisissez votre compte…");
           await getGmailToken();
         } catch(e) {
           setStatus("❌ " + (e.message || e) + " — Réessayez.");
-          alert("Erreur de connexion Gmail : " + e.message);
           setBusy(false); return;
         }
         let errors = [];
@@ -952,7 +965,6 @@
         }
         
         setBusy(false);
-        // FIX: La variable mailsDone ne s'active QUE s'il n'y a pas d'erreur.
         if (errors.length) {
             setMailsDone(false);
             alert(`⚠️ Échec d'envoi pour : ${errors.join(", ")}`);
@@ -974,7 +986,7 @@
           </div>
 
           <Card>
-            <Field label="🔑 Clé API Google AI Studio (Gemini)">
+            <Field label="🔑 Clé API Google AI Studio (Gemini Pro)">
               <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="AIzaSy..." style={{ fontFamily:"monospace" }}/>
             </Field>
             {!apiKey&&<p style={{ fontSize:12,color:"#dc2626",marginTop:6 }}>⚠️ Saisissez votre clé API Gemini pour activer l'outil.</p>}
@@ -1239,7 +1251,7 @@
 
               <div style={{ background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:12,color:"#166534" }}>
                 ✉️ Les mails seront envoyés automatiquement depuis <strong>maths.perriand@gmail.com</strong>.<br/>
-                Vérifiez la boîte d'éléments envoyés du compte Google que vous allez sélectionner.
+                Vérifiez bien la boîte des messages envoyés du compte que vous choisirez lors de l'authentification.
               </div>
               {mailsDone
                 ?<div style={{ textAlign:"center",padding:"1.5rem" }}>
@@ -1261,8 +1273,8 @@
           )}
 
           <div style={{ display:"flex",justifyContent:"space-between",marginTop:"1.5rem" }}>
-            {step>0?<button style={{ background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db" }} disabled={busy} onClick={()=>setStep(step-1)}>← Retour</button>:<div/>}
-            {step<3&&<button disabled={!canNext||busy||!apiKey} onClick={()=>setStep(step+1)}>
+            {step>0?<button style={{ background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db" }} disabled={busy} onClick={()=>{setStep(step-1); setStatus("");}}>← Retour</button>:<div/>}
+            {step<3&&<button disabled={!canNext||busy||!apiKey} onClick={()=>{setStep(step+1); setStatus("");}}>
               {["Diffuser →","Corriger les copies →","Voir les résultats →"][step]}
             </button>}
           </div>
