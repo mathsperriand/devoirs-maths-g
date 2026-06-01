@@ -4,7 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Gestionnaire de devoirs — Maths (Gemini)</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katecss.min.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -57,7 +57,6 @@
 
     /* ── Gmail OAuth ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
-    const GMAIL_API_KEY   = "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y";
     const GMAIL_SENDER    = "maths.perriand@gmail.com";
     const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
 
@@ -124,23 +123,27 @@
       return matched ? matched.join("\r\n") : "";
     }
 
-    function b64url(str) {
-      return btoa(unescape(encodeURIComponent(str)))
-        .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+    /* ── CORRECTION DU BUG MÉMOIRE (Encodage Mime sécurisé) ── */
+    function encodeBase64UTF8(str) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+
+    function b64urlMime(asciiStr) {
+      return btoa(asciiStr).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
     }
 
     function buildMime(to, subject, body) {
       const msg = [
         `From: ${GMAIL_SENDER}`,
         `To: ${to}`,
-        `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
+        `Subject: =?UTF-8?B?${encodeBase64UTF8(subject)}?=`,
         "MIME-Version: 1.0",
         "Content-Type: text/plain; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        btoa(unescape(encodeURIComponent(body)))
+        encodeBase64UTF8(body)
       ].join("\r\n");
-      return b64url(msg);
+      return b64urlMime(msg);
     }
 
     function buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename) {
@@ -148,7 +151,7 @@
       const parts = [
         `From: ${GMAIL_SENDER}`,
         `To: ${to}`,
-        `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
+        `Subject: =?UTF-8?B?${encodeBase64UTF8(subject)}?=`,
         "MIME-Version: 1.0",
         `Content-Type: multipart/mixed; boundary="${boundary}"`,
         "",
@@ -156,7 +159,7 @@
         "Content-Type: text/plain; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        btoa(unescape(encodeURIComponent(body))),
+        encodeBase64UTF8(body),
         "",
         `--${boundary}`,
         `Content-Type: application/pdf; name="${pdfFilename}"`,
@@ -167,7 +170,7 @@
         "",
         `--${boundary}--`
       ].join("\r\n");
-      return b64url(parts);
+      return b64urlMime(parts);
     }
 
     async function sendGmail(to, subject, body, pdfBase64=null, pdfFilename=null) {
@@ -242,6 +245,15 @@
       return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
 
+    /* ── CORRECTION DU BUG DES 3 CLICS (Extraction JSON stricte) ── */
+    function extractJson(text) {
+      const matchArray = text.match(/\[[\s\S]*\]/);
+      if (matchArray) return matchArray[0];
+      const matchObj = text.match(/\{[\s\S]*\}/);
+      if (matchObj) return matchObj[0];
+      return text.trim();
+    }
+
     function parseStudents(raw) {
       return raw.trim().split("\n").filter(Boolean).map((line, i) => {
         const [name, email] = line.split(",").map(s => s.trim());
@@ -253,8 +265,6 @@
       if (!window.katex) return `<pre>${src}</pre>`;
       
       let html = src;
-
-      // 1. Traitement correct des blocs centrés $$...$$
       html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
         try { 
           return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m.trim(), { displayMode: true, throwOnError: false })}</div>`; 
@@ -263,7 +273,6 @@
         }
       });
 
-      // 2. Traitement des formules en ligne $...$
       html = html.replace(/\$([^\$\n]+?)\$/g, (_, m) => {
         try { 
           return window.katex.renderToString(m.trim(), { displayMode: false, throwOnError: false }); 
@@ -272,7 +281,6 @@
         }
       });
 
-      // 3. Traitement des structures de mise en page LaTeX courantes
       html = html
         .replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, '<div style="text-align:center">$1</div>')
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
@@ -291,10 +299,7 @@
         .replace(/\\newline/g, '<br/>')
         .replace(/\\hline/g, '');
 
-      // On supprime les macros de mise en page inconnues, sans toucher au code interne de KaTeX
       html = html.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1');
-      
-      // 4. Gestion des sauts de ligne de texte
       html = html.replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
       return '<p style="margin:6px 0">' + html + '</p>';
     }
@@ -544,7 +549,7 @@
           ];
           let raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
           
-          raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+          raw = extractJson(raw);
           const arr = JSON.parse(raw);
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -621,8 +626,7 @@
           
           let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Dans tes appréciations et conseils, tutoie toujours l'élève et utilise son prénom seul. Réponds uniquement en JSON pur.", true);
           
-          // Protection Markdown intégrée
-          raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+          raw = extractJson(raw);
           
           const arr = JSON.parse(raw);
           if (Array.isArray(arr)) {
@@ -668,7 +672,7 @@
           try{
             const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
             let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
-            raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+            raw = extractJson(raw);
             results.push({...s,...JSON.parse(raw)});
           }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
         }
@@ -727,6 +731,7 @@
         pdf.save(`corrections_${sessionName.replace(/[^a-z0-9]/gi,"_")}.pdf`);
       };
 
+      /* ── LA FONCTION D'ENVOI ENFIN SÉCURISÉE ── */
       const sendResults = async () => {
         setBusy(true);
         try {
@@ -782,10 +787,13 @@
             tempDiv.style.lineHeight = "1.6";
             tempDiv.style.fontSize = "14px";
             
-            // Position absolue parfaite pour éviter les bugs html2canvas
+            // Correction appliquée ici : visible pour html2canvas mais invisible pour l'utilisateur
             tempDiv.style.position = "absolute";
-            tempDiv.style.left = "-10000px";
+            tempDiv.style.left = "0px";
             tempDiv.style.top = "0px";
+            tempDiv.style.zIndex = "-9999";
+            tempDiv.style.opacity = "0";
+            tempDiv.style.pointerEvents = "none";
             
             document.body.appendChild(tempDiv);
 
@@ -873,6 +881,7 @@
           }
           
           try {
+            if (!pdfB64) throw new Error("Génération PDF échouée, envoi annulé.");
             await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
           } catch(e) {
             errors.push(c.name);
@@ -1119,7 +1128,7 @@
                       parts.push({ text: "Corrige cette copie en retard (PDF joint).\nSUJET"+(subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc)+"\nCORRIGÉ :\n"+(corrRef||"[utilise tes connaissances]")+"\nRetourne uniquement un tableau JSON contenant un objet représentant la copie : [{\"name\":\"Nom Prénom\",\"pageStart\":1,\"pageEnd\":1,\"note\":14,\"appreciation\":\"...\",\"details\":[{\"exercice\":\"Ex 1\",\"obtenu\":\"7\",\"sur\":\"10\",\"remarque\":\"...\"}],\"conseil\":\"...\"}]" });
                       
                       let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds uniquement en JSON pur.", true);
-                      raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+                      raw = extractJson(raw);
                       
                       const arr = JSON.parse(raw);
                       if(arr.length>0){
