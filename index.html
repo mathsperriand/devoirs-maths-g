@@ -120,7 +120,8 @@
 
     function wrapBase64(str) {
       if (!str) return "";
-      return str.match(/.{1,76}/g).join("\r\n");
+      const matched = str.match(/.{1,76}/g);
+      return matched ? matched.join("\r\n") : "";
     }
 
     function b64url(str) {
@@ -250,15 +251,28 @@
 
     function latexToHtml(src) {
       if (!window.katex) return `<pre>${src}</pre>`;
-      let html = src
-        .replace(/\$$([\s\S]+?)\$$/g, (_, m) => {
-          try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
-          catch { return `<div>$$${m}$$</div>`; }
-        })
-        .replace(/\$([^\$\n]+?)\$/g, (_, m) => {
-          try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
-          catch { return `$${m}$`; }
-        });
+      
+      let html = src;
+
+      // 1. Traitement correct des blocs centrés $$...$$
+      html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
+        try { 
+          return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m.trim(), { displayMode: true, throwOnError: false })}</div>`; 
+        } catch (e) { 
+          return `<div>$$${m}$$</div>`; 
+        }
+      });
+
+      // 2. Traitement des formules en ligne $...$
+      html = html.replace(/\$([^\$\n]+?)\$/g, (_, m) => {
+        try { 
+          return window.katex.renderToString(m.trim(), { displayMode: false, throwOnError: false }); 
+        } catch (e) { 
+          return `$${m}$`; 
+        }
+      });
+
+      // 3. Traitement des structures de mise en page LaTeX courantes
       html = html
         .replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, '<div style="text-align:center">$1</div>')
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
@@ -275,10 +289,13 @@
         .replace(/\\\\(\[[\d.]+pt\])?/g, '<br/>')
         .replace(/\\vspace\{[^}]+\}/g, '<div style="height:10px"></div>')
         .replace(/\\newline/g, '<br/>')
-        .replace(/\\hline/g, '')
-        .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')
-        .replace(/\\[a-zA-Z]+/g, '')
-        .replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
+        .replace(/\\hline/g, '');
+
+      // On supprime les macros de mise en page inconnues, sans toucher au code interne de KaTeX
+      html = html.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1');
+      
+      // 4. Gestion des sauts de ligne de texte
+      html = html.replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
       return '<p style="margin:6px 0">' + html + '</p>';
     }
 
@@ -465,6 +482,10 @@
       const [corrections, setCorrectionsRaw] = useState(() => load("corrections", []));
       const setCorrections = v => { setCorrectionsRaw(v); persist("corrections",v); };
 
+      const defaultPrompt = `Fichier de copie analysé : {filename}\n\nListe des élèves attendus :\n{studentList}\n\nSUJET :\n{sujet}\n\nCORRIGÉ :\n{corrige}\n\nCONSIGNES D'ANALYSE MULTIMODALE :\n1. Ce document contient la copie d'un ou plusieurs élèves.\n2. L'écriture peut être dactylographiée ou manuscrite (parfois désordonnée ou difficile à lire).\n3. L'élève peut avoir écrit sur des feuilles à carreaux. Fais abstraction des lignes du fond.\n4. Déchiffre l'écriture et identifie précisément l'élève dans la liste. Retourne le nom EXACT (Prénom et Nom).\n\nIMPORTANT : Tutoie l'élève (tu, ton, ta) et utilise son prénom seul dans l'appréciation et le conseil. Sois précis et technique, évalue selon un barème classique.\n\nRetourne exclusivement un tableau JSON valide : [{"name":"Nom Prénom","note":14,"appreciation":"[Prénom], tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]`;
+      const [promptCorrection, setPromptCorrectionRaw] = useState(() => load("promptCorrection", defaultPrompt));
+      const setPromptCorrection = v => { setPromptCorrectionRaw(v); persist("promptCorrection", v); };
+
       /* Étape 3 */
       const [mailsDone,   setMailsDoneRaw]   = useState(() => load("mailsDone", false));
       const setMailsDone = v => { setMailsDoneRaw(v); persist("mailsDone",v); };
@@ -521,8 +542,10 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu es professeur de mathématiques. Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
-          const arr = JSON.parse(raw.trim());
+          let raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
+          
+          raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+          const arr = JSON.parse(raw);
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
             setStudentsRaw(formatted);
@@ -578,21 +601,60 @@
         catch(e) { setStatus("Erreur fusion PDF : "+e.message); setBusy(false); return; }
         setStatus("Lecture et correction par Gemini…");
         const studentList=students.map(s=>`- ${s.name}`).join("\n");
+        
+        let currentCorrections = students.map(s => ({ ...s, skipped: true }));
+
         try {
           const parts = [];
           if (subjectMode==="upload" && upSubPdf) {
             parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
           }
           parts.push({ inlineData: { mimeType: "application/pdf", data: mergedB64 } });
-          parts.push({ text: `Copies des élèves :\n${studentList}\n\nSUJET${subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc}\n\nCORRIGÉ :\n${corrRef||"[utilise tes connaissances]"}\n\nIdentifie chaque copie, ses pages, corrige-la.\nIMPORTANT : dans l'appréciation et le conseil, tutoie l'élève (tu, ton, ta) et utilise son prénom seul.\nRetourne exclusivement un tableau JSON : [{"name":"Nom Prénom","pageStart":1,"pageEnd":2,"note":14,"appreciation":"Lucas, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]` });
           
-          const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Dans tes appréciations et conseils, tutoie toujours l'élève et utilise son prénom seul. Réponds uniquement en JSON pur.", true);
-          const arr = JSON.parse(raw.trim());
-          setCorrections(students.map(s=>{
-            const f=arr.find(r=>r.name?.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
-            return f?{...s,...f}:{...s,skipped:true};
-          }));
-        } catch(e){setStatus("Erreur : "+e.message);}
+          let textPrompt = promptCorrection
+            .replace("{filename}", "fusion.pdf")
+            .replace("{studentList}", studentList)
+            .replace("{sujet}", subjectMode === "upload" ? "(voir PDF joint)" : latexSrc)
+            .replace("{corrige}", corrRef || "[utilise tes connaissances]");
+            
+          parts.push({ text: textPrompt });
+          
+          let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Dans tes appréciations et conseils, tutoie toujours l'élève et utilise son prénom seul. Réponds uniquement en JSON pur.", true);
+          
+          // Protection Markdown intégrée
+          raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+          
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) {
+              arr.forEach(resEleve => {
+                if (!resEleve.name) return;
+                const nomExtrait = resEleve.name.trim().toLowerCase();
+                
+                let idx = currentCorrections.findIndex(s => s.name.trim().toLowerCase() === nomExtrait);
+                if (idx === -1) {
+                  idx = currentCorrections.findIndex(s => {
+                    const sName = s.name.toLowerCase();
+                    return sName.includes(nomExtrait) || nomExtrait.includes(sName);
+                  });
+                }
+                if (idx === -1) {
+                  const motsExtraits = nomExtrait.split(/[\s-]+/).filter(w => w.length > 2);
+                  idx = currentCorrections.findIndex(s => {
+                    const motsS = s.name.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2);
+                    return motsExtraits.some(m => motsS.includes(m));
+                  });
+                }
+
+                if (idx !== -1) {
+                  currentCorrections[idx] = { ...currentCorrections[idx], ...resEleve, skipped: false };
+                }
+              });
+          }
+          setCorrections(currentCorrections);
+        } catch(e){
+          console.error("Erreur lors de la correction:", e);
+          setStatus("Erreur lors de l'analyse : vérifiez la console.");
+        }
         setBusy(false);setStatus("");
       };
 
@@ -605,8 +667,9 @@
           setStatus(`Correction de ${s.name}…`);
           try{
             const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
-            const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
-            results.push({...s,...JSON.parse(raw.trim())});
+            let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
+            raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+            results.push({...s,...JSON.parse(raw)});
           }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
         }
         setCorrections(results);setBusy(false);setStatus("");
@@ -678,27 +741,39 @@
           if(c.skipped||!c.email)continue;
           setStatus(`Envoi à ${c.name}…`);
           const prenom = c.name.split(" ")[0];
-          const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
+          
+          let appreciation = c.appreciation || "";
+          appreciation = appreciation.replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu");
+          if (c.name) appreciation = appreciation.split(c.name).join(prenom);
+          
+          let conseil = c.conseil || "";
+          conseil = conseil.replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu");
+          if (c.name) conseil = conseil.split(c.name).join(prenom);
           
           const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nTu trouveras en pièce jointe ton rapport complet avec le corrigé officiel rédigé proprement en notation mathématique.\n\nCordialement,\nF. Nocca`;
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
+          
+          let tempDiv = null;
 
           try {
             setStatus(`Génération du corrigé LaTeX pour ${prenom}…`);
             const parts = [{ text: "Rédige le corrigé mathématique strictement technique pour " + prenom + " (note : " + c.note + "/20).\n" +
               "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
               "DÉTAIL ET REMARQUES :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
-              "Fais des réponses courtes, directes et purement mathématiques. Ne remets pas d'appréciation globale ici.\n" +
-              "Rédige ce corrigé avec un formalisme mathématique rigoureux en utilisant impérativement la syntaxe LaTeX pour TOUTES les formules et expressions mathématiques (entoure les formules en ligne de simples symboles $ comme $f(x)=2x+3$ et les formules centrées de doubles symboles $$).\n" +
-              "IMPORTANT : Ne mets PAS de balises ou de blocs de code Markdown (pas de ``` ou ```latex), écris directement le texte et les formules LaTeX. Commence directement par le contenu du corrigé." }];
+              "Consignes obligatoires :\n" +
+              "- Fais des réponses mathématiques directes et complètes.\n" +
+              "- Ne remets AUCUNE appréciation globale ni phrase de politesse d'introduction ou de conclusion.\n" +
+              "- Utilise la syntaxe LaTeX standard ($...$ et $$...$$) pour TOUTES les mathématiques.\n" +
+              "- NE METS PAS la réponse dans un bloc markdown (pas de ```latex ni de ```). Commence directement ton texte." }];
             
-            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de mathématiques. Utilise une syntaxe LaTeX impeccable pour toutes les formules. Tu ne mets jamais de blocs de code Markdown (pas de ```).", false);
+            let corrTexte = await callGemini(apiKey, parts, "Tu es un professeur de mathématiques. Ne génère que du texte brut avec formules LaTeX, jamais de Markdown.", false);
+            
+            corrTexte = corrTexte.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
 
-            setStatus(`Mise en page graphique pour ${prenom}…`);
+            setStatus(`Création de la pièce jointe pour ${prenom}…`);
             
-            const tempDiv = document.createElement("div");
+            tempDiv = document.createElement("div");
             tempDiv.style.width = "750px";
             tempDiv.style.background = "#ffffff";
             tempDiv.style.padding = "40px";
@@ -706,9 +781,12 @@
             tempDiv.style.fontFamily = "system-ui, -apple-system, sans-serif";
             tempDiv.style.lineHeight = "1.6";
             tempDiv.style.fontSize = "14px";
+            
+            // Position absolue parfaite pour éviter les bugs html2canvas
             tempDiv.style.position = "absolute";
-            tempDiv.style.left = "-9999px";
-            tempDiv.style.top = "-9999px";
+            tempDiv.style.left = "-10000px";
+            tempDiv.style.top = "0px";
+            
             document.body.appendChild(tempDiv);
 
             const detailsHtml = (c.details || []).map(d => `
@@ -749,7 +827,7 @@
               </div>
 
               <div style="margin-top: 35px; border-top: 1px dashed #d1d5db; padding-top: 25px;">
-                <h2 style="font-size: 16px; font-weight: 700; margin-bottom: 15px; color: #111827; border-left: 4px solid #1d4ed8; padding-left: 10px;">✏️ Corrigé Détaillé (Solutions LaTeX)</h2>
+                <h2 style="font-size: 16px; font-weight: 700; margin-bottom: 15px; color: #111827; border-left: 4px solid #1d4ed8; padding-left: 10px;">✏️ Corrigé Détaillé</h2>
                 <div style="font-size: 13.5px; color: #1f2937;">
                   ${latexToHtml(corrTexte)}
                 </div>
@@ -760,9 +838,10 @@
               </div>
             `;
 
-            const canvas = await window.html2canvas(tempDiv, { scale: 1.5, useCORS: true, backgroundColor: "#ffffff" });
-            document.body.removeChild(tempDiv);
+            await new Promise(r => setTimeout(r, 100));
 
+            const canvas = await window.html2canvas(tempDiv, { scale: 1.5, useCORS: true, backgroundColor: "#ffffff" });
+            
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
             const W = pdf.internal.pageSize.getWidth(), H = pdf.internal.pageSize.getHeight(), m = 15;
@@ -785,7 +864,13 @@
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
             pdfFilename = `corrige_${prenom}.pdf`;
 
-          } catch(e) { console.error("Erreur PDF corrigé:", e); }
+          } catch(e) { 
+            console.error("Erreur PDF corrigé:", e); 
+          } finally {
+            if (tempDiv && document.body.contains(tempDiv)) {
+              document.body.removeChild(tempDiv);
+            }
+          }
           
           try {
             await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
@@ -937,6 +1022,15 @@
               <Card>
                 <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
 
+                <Field label="🛠️ Modifier le Prompt de l'IA (Correction multimodale)">
+                  <textarea value={promptCorrection} onChange={e=>setPromptCorrection(e.target.value)}
+                    style={{ minHeight:150, fontFamily:"monospace", fontSize:11, marginBottom:4 }}/>
+                  <div style={{ fontSize:10, color:"#6b7280", marginBottom:14 }}>
+                    Variables disponibles : <code>{'{filename}'}</code>, <code>{'{studentList}'}</code>, <code>{'{sujet}'}</code>, <code>{'{corrige}'}</code>.<br/>
+                    <em>Veillez à conserver la consigne de renvoyer un tableau JSON valide.</em>
+                  </div>
+                </Field>
+
                 <div onDragOver={e=>e.preventDefault()}
                   onDrop={e=>{e.preventDefault();addCopiesPdf(e.dataTransfer.files);}}
                   onClick={()=>document.getElementById("copies-pdf2").click()}
@@ -1024,8 +1118,10 @@
                       parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
                       parts.push({ text: "Corrige cette copie en retard (PDF joint).\nSUJET"+(subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc)+"\nCORRIGÉ :\n"+(corrRef||"[utilise tes connaissances]")+"\nRetourne uniquement un tableau JSON contenant un objet représentant la copie : [{\"name\":\"Nom Prénom\",\"pageStart\":1,\"pageEnd\":1,\"note\":14,\"appreciation\":\"...\",\"details\":[{\"exercice\":\"Ex 1\",\"obtenu\":\"7\",\"sur\":\"10\",\"remarque\":\"...\"}],\"conseil\":\"...\"}]" });
                       
-                      const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds uniquement en JSON pur.", true);
-                      const arr = JSON.parse(raw.trim());
+                      let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds uniquement en JSON pur.", true);
+                      raw = raw.replace(/^```[a-z]*\n/gi, "").replace(/\n```$/g, "").trim();
+                      
+                      const arr = JSON.parse(raw);
                       if(arr.length>0){
                         const newC=arr[0];
                         const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
