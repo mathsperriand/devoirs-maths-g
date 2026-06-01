@@ -242,7 +242,7 @@
       if (!apiKey) throw new Error("Clé API manquante");
       
       // FIX MODEL : Passage explicite au modèle PRO pour éviter les hallucinations JSON sur les PDF
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
       
       for (let i = 0; i < retries; i++) {
         try {
