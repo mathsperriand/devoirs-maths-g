@@ -175,18 +175,30 @@
 
     async function sendGmail(to, subject, body, pdfBase64=null, pdfFilename=null) {
       const token = await getGmailToken();
-      const raw   = pdfBase64
+      const raw = pdfBase64
         ? buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename)
         : buildMime(to, subject, body);
+      
+      console.log("Tentative d'envoi vers :", to);
+      
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
-        headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+        headers: { 
+          "Authorization": "Bearer " + token, 
+          "Content-Type": "application/json" 
+        },
         body: JSON.stringify({ raw }),
       });
+
+      const data = await res.json();
+      
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error?.message || "Erreur Gmail");
+        console.error("ERREUR GMAIL DÉTAILLÉE :", data);
+        throw new Error(data.error?.message || "Erreur inconnue lors de l'envoi");
       }
+      
+      console.log("Succès, ID du message :", data.id);
+      return data;
     }
 
     /* ── Gestionnaire de sessions ── */
