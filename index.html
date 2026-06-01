@@ -4,7 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Gestionnaire de devoirs — Maths (Gemini)</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katecss.min.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -123,7 +123,7 @@
       return matched ? matched.join("\r\n") : "";
     }
 
-    /* ── CORRECTION DU BUG MÉMOIRE (Encodage Mime sécurisé) ── */
+    /* ── Encodage Mime sécurisé ── */
     function encodeBase64UTF8(str) {
       return btoa(unescape(encodeURIComponent(str)));
     }
@@ -245,7 +245,7 @@
       return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
 
-    /* ── CORRECTION DU BUG DES 3 CLICS (Extraction JSON stricte) ── */
+    /* ── Extraction JSON stricte ── */
     function extractJson(text) {
       const matchArray = text.match(/\[[\s\S]*\]/);
       if (matchArray) return matchArray[0];
@@ -516,49 +516,63 @@
         if (!arr.length) return;
         
         let loaded = 0;
-        let firstB64 = null;
+        let newPdfs = [];
         
         arr.forEach(file => {
           readPdf(file, b64 => {
-            if (loaded === 0) {
-              firstB64 = b64;
-            }
-            setCopiesPdfs(prev => [...prev, {name: file.name, b64}]);
+            newPdfs.push({name: file.name, b64});
             loaded++;
             
-            if (loaded === arr.length && firstB64) {
-              extractNames(firstB64);
+            if (loaded === arr.length) {
+              setCopiesPdfs(prev => {
+                extractNames(newPdfs);
+                return [...prev, ...newPdfs];
+              });
             }
           });
         });
+      };
+
+      const extractNames = async (pdfList) => {
+        if (!pdfList || !pdfList.length || !apiKey) return;
+        setExtracting(true);
+        try {
+          let b64Data = pdfList[0].b64;
+          if (pdfList.length > 1) {
+            b64Data = await mergePdfs(pdfList);
+          }
+
+          const parts = [
+            { inlineData: { mimeType: "application/pdf", data: b64Data } },
+            { text: "Extrais le nom complet et l'email de chaque élève présent dans ces documents. Retourne STRICTEMENT un tableau JSON plat, par exemple : [{\"name\":\"Nom Prénom\",\"email\":\"\"}]. Ne renvoie aucun objet parent." }
+          ];
+          let raw = await callGemini(apiKey, parts, "Tu es un extracteur de données strict. Ne renvoie qu'un tableau JSON pur.", true);
+          
+          raw = extractJson(raw);
+          const parsed = JSON.parse(raw);
+          
+          let arr = [];
+          if (Array.isArray(parsed)) {
+            arr = parsed;
+          } else if (typeof parsed === 'object') {
+            arr = Object.values(parsed).find(Array.isArray) || [];
+          }
+
+          if (arr.length > 0) {
+            const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
+            setStudentsRaw(prev => prev ? prev + "\n" + formatted : formatted);
+          }
+        } catch(e) { 
+          console.error("Erreur d'extraction :", e); 
+          alert("Erreur lors de l'extraction IA : " + e.message); 
+        }
+        setExtracting(false);
       };
 
       const handleSubjectPdf = (file) => {
         if (!file||file.type!=="application/pdf") return;
         setUpSubPdfName(file.name);
         readPdf(file, b64 => setUpSubPdf(b64));
-      };
-
-      const extractNames = async (b64) => {
-        if (!b64 || !apiKey) return;
-        setExtracting(true);
-        try {
-          const parts = [
-            { inlineData: { mimeType: "application/pdf", data: b64 } },
-            { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
-          ];
-          let raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
-          
-          raw = extractJson(raw);
-          const arr = JSON.parse(raw);
-          if (Array.isArray(arr)) {
-            const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
-            setStudentsRaw(formatted);
-          }
-        } catch(e) { 
-          console.error("Erreur d'extraction :", e); 
-        }
-        setExtracting(false);
       };
 
       const generateSubject = async () => {
@@ -627,8 +641,8 @@
           let raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Dans tes appréciations et conseils, tutoie toujours l'élève et utilise son prénom seul. Réponds uniquement en JSON pur.", true);
           
           raw = extractJson(raw);
-          
           const arr = JSON.parse(raw);
+          
           if (Array.isArray(arr)) {
               arr.forEach(resEleve => {
                 if (!resEleve.name) return;
@@ -731,7 +745,6 @@
         pdf.save(`corrections_${sessionName.replace(/[^a-z0-9]/gi,"_")}.pdf`);
       };
 
-      /* ── LA FONCTION D'ENVOI ENFIN SÉCURISÉE ── */
       const sendResults = async () => {
         setBusy(true);
         try {
@@ -787,7 +800,6 @@
             tempDiv.style.lineHeight = "1.6";
             tempDiv.style.fontSize = "14px";
             
-            // Correction appliquée ici : visible pour html2canvas mais invisible pour l'utilisateur
             tempDiv.style.position = "absolute";
             tempDiv.style.left = "0px";
             tempDiv.style.top = "0px";
