@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Devoirs Maths - V2 (Vanilla)</title>
+  <title>Devoirs Maths - V2 (Stable)</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 text-gray-800 font-sans min-h-screen p-8">
@@ -12,7 +12,7 @@
     
     <header class="flex justify-between items-center mb-8">
       <h1 class="text-2xl font-bold text-blue-900">📐 Gestionnaire de Devoirs (V2)</h1>
-      <span class="text-sm text-gray-500 bg-gray-200 px-3 py-1 rounded-full">Fondations (Vanilla JS)</span>
+      <span class="text-sm text-gray-500 bg-gray-200 px-3 py-1 rounded-full">Fondations (Stable)</span>
     </header>
 
     <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
@@ -51,7 +51,7 @@
     <div id="step2Container" class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 hidden">
       <h2 class="text-lg font-bold text-gray-800 mb-4">👥 Étape 2 : Les Copies (Extraction)</h2>
       <p class="text-sm text-gray-600 mb-4">
-        Déposez le PDF contenant la ou les copies numérisées. L'IA va extraire les noms de manière stricte (Format JSON garanti).
+        Déposez le PDF contenant la ou les copies numérisées.
       </p>
 
       <div 
@@ -74,7 +74,6 @@
   </div>
 
   <script>
-    // Éléments du DOM
     const apiKeyInput = document.getElementById('apiKeyInput');
     const apiKeyStatus = document.getElementById('apiKeyStatus');
     const step1Container = document.getElementById('step1Container');
@@ -96,17 +95,14 @@
     const studentCount = document.getElementById('studentCount');
     const studentsList = document.getElementById('studentsList');
 
-    // Variables d'état
     let apiKey = localStorage.getItem('gemini_api_key_v2') || '';
     let subjectBase64 = null;
 
-    // Initialisation
     if (apiKey) {
       apiKeyInput.value = apiKey;
       updateApiKeyStatus();
     }
 
-    // Gestion de la clé API
     apiKeyInput.addEventListener('input', (e) => {
       apiKey = e.target.value.trim();
       localStorage.setItem('gemini_api_key_v2', apiKey);
@@ -126,7 +122,6 @@
       }
     }
 
-    // Conversion Fichier -> Base64
     const fileToBase64 = (file) => {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -136,7 +131,6 @@
       });
     };
 
-    // Logique : Clic et Upload du Sujet
     subjectDropZone.addEventListener('click', () => subjectInput.click());
     subjectInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
@@ -144,29 +138,23 @@
       
       try {
         subjectBase64 = await fileToBase64(file);
-        
-        // Mise à jour de l'interface
         subjectUnloadedState.classList.add('hidden');
         subjectLoadedState.classList.remove('hidden');
         subjectFileNameDisplay.textContent = "Sujet chargé : " + file.name;
         subjectDropZone.classList.add('border-green-300', 'bg-green-50');
         subjectDropZone.classList.remove('border-gray-300', 'hover:bg-gray-50');
-        
-        // Rendre l'étape 2 visible
         step2Container.classList.remove('hidden');
       } catch (err) {
         showError("Impossible de lire le fichier du sujet.");
       }
-      e.target.value = ''; // Réinitialise l'input
+      e.target.value = ''; 
     });
 
-    // Logique : Clic et Upload des Copies
     copiesDropZone.addEventListener('click', () => copiesInput.click());
     copiesInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       
-      // Interface en mode "Chargement"
       copiesInitialText.classList.add('hidden');
       copiesLoadingText.classList.remove('hidden');
       errorMessage.classList.add('hidden');
@@ -178,7 +166,6 @@
       } catch (err) {
         showError(err.message);
       } finally {
-        // Fin du chargement
         copiesInitialText.classList.remove('hidden');
         copiesLoadingText.classList.add('hidden');
         e.target.value = '';
@@ -190,33 +177,18 @@
       errorMessage.classList.remove('hidden');
     }
 
-    // Appel API avec la bonne version (v1) et Structured Outputs (Garantie JSON)
     async function extractStudentsFromGemini(base64Pdf) {
-      // CORRECTION ICI : Utilisation de v1 (stable) au lieu de v1beta
+      // URL stable et officielle.
       const url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=" + apiKey;
       
       const body = {
         contents: [{
           parts: [
             { inlineData: { mimeType: "application/pdf", data: base64Pdf } },
-            { text: "Identifie chaque élève présent dans ce document. Extrais le nom complet et l'email (si présent)." }
+            // On force le formatage directement dans le texte du prompt de manière très stricte
+            { text: "Tu es un extracteur de données. Identifie chaque élève présent dans ce document (Sujet ou Copie). Extrais son nom complet et son email (laisse vide si absent). Retourne UNIQUEMENT ET STRICTEMENT un tableau JSON valide. Ne rajoute AUCUN texte avant ou après. Exemple de réponse attendue : [{\"name\": \"Jean Dupont\", \"email\": \"\"}]" }
           ]
-        }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "ARRAY",
-            description: "Liste des élèves extraits",
-            items: {
-              type: "OBJECT",
-              properties: {
-                name: { type: "STRING", description: "Prénom et Nom de l'élève" },
-                email: { type: "STRING", description: "Adresse email" }
-              },
-              required: ["name"]
-            }
-          }
-        }
+        }]
       };
 
       const response = await fetch(url, {
@@ -231,13 +203,20 @@
         throw new Error(data.error?.message || "Erreur de communication avec Gemini.");
       }
 
-      const rawText = data.candidates[0].content.parts[0].text;
-      const students = JSON.parse(rawText);
+      let rawText = data.candidates[0].content.parts[0].text;
       
+      // Nettoyage impitoyable de la réponse de l'IA (enlève les blocs markdown ```json et cherche le tableau [ ])
+      const match = rawText.match(/\[[\s\S]*\]/);
+      if (match) {
+        rawText = match[0];
+      } else {
+        rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+      }
+
+      const students = JSON.parse(rawText);
       renderStudents(students);
     }
 
-    // Affichage des résultats
     function renderStudents(students) {
       studentsList.innerHTML = '';
       studentCount.textContent = students.length;
