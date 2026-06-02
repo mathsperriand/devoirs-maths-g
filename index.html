@@ -214,13 +214,16 @@
         contents: [{ parts: parts }]
       };
       
-      const generationConfig = {};
+      // AJOUT DE LA TEMPÉRATURE À 0 POUR FIABILISER LA NOTATION
+      const generationConfig = {
+        temperature: 0
+      };
+      
       if (jsonMode) {
         generationConfig.responseMimeType = "application/json";
       }
-      if (Object.keys(generationConfig).length > 0) {
-        body.generationConfig = generationConfig;
-      }
+      
+      body.generationConfig = generationConfig;
       
       if (systemInstruction) {
         body.systemInstruction = { parts: [{ text: systemInstruction }] };
@@ -589,9 +592,6 @@
         setBusy(false);setStatus("");
       };
 
-      // ===============================================
-      // MODIFICATION ÉTAPE 1 : PROMPT CORRECTION (CAS A)
-      // ===============================================
       const correctFromPdf = async () => {
         if (!copiesPdfs.length||!apiKey) return;
         setBusy(true);setStatus("Fusion des PDFs…");setProgress(10);
@@ -694,9 +694,6 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour, sans balise de bl
         setBusy(false);setStatus("");
       };
 
-      // ===============================================
-      // MODIFICATION ÉTAPE 1 : PROMPT CORRECTION (CAS B)
-      // ===============================================
       const correctAll = async () => {
         if(!apiKey)return;
         setBusy(true);const results=[];setProgress(0);
@@ -1133,6 +1130,28 @@ Structure attendue :
                           style={{ minHeight: 40, fontSize: 12, fontStyle: "italic", lineHeight: 1.4, color: "#1e3a8a" }}
                         />
                       </Field>
+
+                      {/* NOUVEAU BLOC ÉTAPE 2 : AFFICHAGE DU CORRIGÉ LATEX */}
+                      {c.latexCorrection && (
+                        <Field label="Corrigé mathématique généré par l'IA">
+                          <div
+                            style={{
+                              background:"#fff",
+                              border:"1px solid #e5e7eb",
+                              borderRadius:8,
+                              padding:"16px",
+                              maxHeight:"400px",
+                              overflow:"auto",
+                              fontSize: 13,
+                              lineHeight: 1.6
+                            }}
+                            dangerouslySetInnerHTML={{
+                              __html: latexToHtml(c.latexCorrection)
+                            }}
+                          />
+                        </Field>
+                      )}
+
                     </div>):<p style={{ fontSize:13,color:"#9ca3af",fontStyle:"italic" }}>Copie non trouvée dans le PDF</p>}
                   </Card>
                 );
