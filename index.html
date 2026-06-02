@@ -297,7 +297,7 @@
       return <span style={{ fontSize:11, fontWeight:500, padding:"3px 10px", borderRadius:6, background:bg, color:tc }}>{children}</span>;
     }
 
-    /* ════ SessionManager ════ */
+    /* ── SessionManager ── */
     function SessionManager({ onSelect }) {
       const [sessions, setSessions] = useState(() => getAllSessions());
       const [newName,  setNewName]  = useState("");
@@ -417,6 +417,7 @@
       const setStep = v => { setStepRaw(v); persist("step",v); };
       const [busy,    setBusy]    = useState(false);
       const [status,  setStatus]  = useState("");
+      const [progress, setProgress] = useState(0); // Amélioration 1 : Barre de progression réelle
       const [libsOk,  setLibsOk]  = useState({ h2c: !!window.html2canvas, jspdf: !!window.jspdf });
       const previewRef = useRef(null);
 
@@ -458,7 +459,25 @@
       const [answers,     setAnswersRaw]     = useState(() => load("answers", {}));
       const setAnswers = v => { setAnswersRaw(v); persist("answers",v); };
       const [corrections, setCorrectionsRaw] = useState(() => load("corrections", []));
-      const setCorrections = v => { setCorrectionsRaw(v); persist("corrections",v); };
+      
+      // Amélioration 2 : Support correct des mises à jour fonctionnelles et sauvegarde directe
+      const setCorrections = v => {
+        if (typeof v === 'function') {
+          setCorrectionsRaw(prev => {
+            const next = v(prev);
+            persist("corrections", next);
+            return next;
+          });
+        } else {
+          setCorrectionsRaw(v);
+          persist("corrections", v);
+        }
+      };
+
+      // Handler pour modifier manuellement une correction sur l'écran de relecture
+      const updateCorrection = (id, field, value) => {
+        setCorrections(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
+      };
 
       /* Étape 3 */
       const [mailsDone,   setMailsDoneRaw]   = useState(() => load("mailsDone", false));
@@ -516,7 +535,7 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
+          const raw = await callGemini(apiKey, parts, "Tu es exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
           const arr = JSON.parse(raw.trim());
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -530,23 +549,28 @@
 
       const generateSubject = async () => {
         if (!consignes.trim()||!apiKey) return;
-        setBusy(true); setStatus("Génération du sujet avec Gemini…");
+        setBusy(true); setStatus("Génération du sujet avec Gemini…"); setProgress(15);
+        const interval = setInterval(() => {
+          setProgress(prev => Math.min(prev + 5, 90));
+        }, 300);
         try {
           const parts = [{ text: `Génère un sujet de mathématiques en LaTeX selon ces consignes :\n${consignes}\n\nRetourne UNIQUEMENT le contenu LaTeX (sans \\documentclass ni \\begin{document}), puis la correction séparée par ---CORRECTION--- :\n\n\\begin{center}\n{\\Large\\textbf{Devoir de mathématiques}}\\\\[4pt]\n{\\normalsize [Niveau] \\hfill Durée : 1h}\n\\end{center}\n\\vspace{8pt}\n\\section*{Exercice 1 --- [titre] \\hfill (X points)}\n\\begin{enumerate}\n  \\item Énoncé avec $f(x) = ...$\n\\end{enumerate}\n\n---CORRECTION---\n\\section*{Corrigé exercice 1}\n...` }];
           const res = await callGemini(apiKey, parts, "Tu es professeur de mathématiques au lycée français. LaTeX rigoureux pour toutes les formules.", false);
+          clearInterval(interval); setProgress(100);
           const sep = res.indexOf("---CORRECTION---");
           setLatexSrc(sep>0?res.slice(0,sep).trim():res);
           setCorrRef(sep>0?res.slice(sep+16).trim():"");
-        } catch(e) { setStatus("Erreur : "+e.message); }
+        } catch(e) { clearInterval(interval); setStatus("Erreur : "+e.message); }
         setBusy(false); setStatus("");
       };
 
       const downloadSubjectPdf = async () => {
         if (!previewRef.current||!libsOk.h2c||!libsOk.jspdf) return;
-        setBusy(true); setStatus("Génération du PDF…");
+        setBusy(true); setStatus("Génération du PDF…"); setProgress(15);
         try {
           const el=previewRef.current;
           const canvas=await window.html2canvas(el,{scale:2,useCORS:true,backgroundColor:"#ffffff"});
+          setProgress(45);
           const {jsPDF}=window.jspdf;
           const pdf=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
           const W=pdf.internal.pageSize.getWidth(),H=pdf.internal.pageSize.getHeight(),m=15;
@@ -559,19 +583,24 @@
             if(srcY>0)pdf.addPage();
             pdf.addImage(sc.toDataURL("image/png"),"PNG",m,m,iw,sliceH);
             srcY+=sliceH;remaining-=sliceH;
+            setProgress(Math.min(45 + Math.round((srcY / ((canvas.height*iw)/canvas.width)) * 50), 95));
           }
           pdf.save("sujet_maths.pdf");
+          setProgress(100);
         } catch(e){setStatus("Erreur : "+e.message);}
         setBusy(false);setStatus("");
       };
 
       const correctFromPdf = async () => {
         if (!copiesPdfs.length||!apiKey) return;
-        setBusy(true);setStatus("Fusion des PDFs…");
+        setBusy(true);setStatus("Fusion des PDFs…");setProgress(10);
         let mergedB64;
         try { mergedB64 = await mergePdfs(copiesPdfs); }
         catch(e) { setStatus("Erreur fusion PDF : "+e.message); setBusy(false); return; }
-        setStatus("Lecture et correction par Gemini…");
+        setStatus("Lecture et correction par Gemini (cette opération peut être longue)…");setProgress(30);
+        const interval = setInterval(() => {
+          setProgress(prev => Math.min(prev + 2, 95));
+        }, 700);
         const studentList=students.map(s=>`- ${s.name}`).join("\n");
         try {
           const parts = [];
@@ -582,28 +611,33 @@
           parts.push({ text: `Copies des élèves :\n${studentList}\n\nSUJET${subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc}\n\nCORRIGÉ :\n${corrRef||"[utilise tes connaissances]"}\n\nIdentifie chaque copie, ses pages, corrige-la.\nIMPORTANT : dans l'appréciation et le conseil, tutoie l'élève (tu, ton, ta) et utilise son prénom seul.\nRetourne exclusivement un tableau JSON : [{"name":"Nom Prénom","pageStart":1,"pageEnd":2,"note":14,"appreciation":"Lucas, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]` });
           
           const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Dans tes appréciations et conseils, tutoie toujours l'élève et utilise son prénom seul. Réponds uniquement en JSON pur.", true);
+          clearInterval(interval); setProgress(100);
           const arr = JSON.parse(raw.trim());
           setCorrections(students.map(s=>{
             const f=arr.find(r=>r.name?.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
             return f?{...s,...f}:{...s,skipped:true};
           }));
-        } catch(e){setStatus("Erreur : "+e.message);}
+        } catch(e){clearInterval(interval); setStatus("Erreur : "+e.message);}
         setBusy(false);setStatus("");
       };
 
       const correctAll = async () => {
         if(!apiKey)return;
-        setBusy(true);const results=[];
+        setBusy(true);const results=[];setProgress(0);
+        let idx = 0;
         for(const s of students){
           const ans=(answers[s.id]||"").trim();
-          if(!ans){results.push({...s,skipped:true});continue;}
-          setStatus(`Correction de ${s.name}…`);
+          if(!ans){results.push({...s,skipped:true}); idx++; continue;}
+          setStatus(`Correction de ${s.name} (${idx + 1}/${students.length})…`);
+          setProgress(Math.round((idx / students.length) * 100));
           try{
             const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
             const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
             results.push({...s,...JSON.parse(raw.trim())});
           }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
+          idx++;
         }
+        setProgress(100);
         setCorrections(results);setBusy(false);setStatus("");
       };
 
@@ -660,7 +694,7 @@
       };
 
       const sendResults = async () => {
-        setBusy(true);
+        setBusy(true); setProgress(0);
         try {
           setStatus("Connexion Gmail — choisissez maths.perriand@gmail.com…");
           await getGmailToken();
@@ -669,9 +703,12 @@
           setBusy(false); return;
         }
         let errors = [];
+        const activeStudents = corrections.filter(c => !c.skipped && c.email);
+        let idx = 0;
         for(const c of corrections){
           if(c.skipped||!c.email)continue;
           setStatus(`Envoi à ${c.name}…`);
+          setProgress(Math.round((idx / activeStudents.length) * 100));
           const details=c.details?.map(d=>`• ${d.exercice} : ${d.obtenu}/${d.sur} — ${d.remarque}`).join("\n")||"";
           const prenom = c.name.split(" ")[0];
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
@@ -690,7 +727,6 @@
             
             const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte lisible, formules en notation simple.", false);
 
-            setStatus(`Mise en page PDF pour ${prenom}…`);
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
             const marg=15, pw=180, lh=5.5;
@@ -732,7 +768,10 @@
             errors.push(c.name);
             console.error("Erreur envoi " + c.name, e);
           }
+          idx++;
+          setProgress(Math.round((idx / activeStudents.length) * 100));
         }
+        setProgress(100);
         setMailsDone(true); setBusy(false);
         setStatus(errors.length ? `⚠️ Échec pour : ${errors.join(", ")}` : "");
       };
@@ -777,6 +816,19 @@
             })}
           </div>
 
+          {/* Amélioration 1 : Barre de progression réelle globale */}
+          {busy && (
+            <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, fontSize:13 }}>
+                <span style={{ fontWeight:500, color:"#1d4ed8" }}>{status}</span>
+                <span style={{ fontWeight:600, color:"#111827" }}>{progress}%</span>
+              </div>
+              <div style={{ width:"100%", background:"#f3f4f6", height:8, borderRadius:4, overflow:"hidden" }}>
+                <div style={{ width:`${progress}%`, background:"#1d4ed8", height:"100%", transition:"width 0.2s ease" }} />
+              </div>
+            </div>
+          )}
+
           {step===0&&(<>
             <div style={{ display:"flex",gap:8,marginBottom:16 }}>
               {[["generate","✨ Générer avec l'IA"],["upload","📂 J'ai déjà un sujet (PDF)"]].map(([mode,lbl])=>(
@@ -796,7 +848,7 @@
                     style={{ minHeight:130,lineHeight:1.6 }}/>
                 </Field>
                 <button disabled={busy||!consignes.trim()||!apiKey} onClick={generateSubject} style={{ width:"100%",marginTop:8 }}>
-                  {busy?status:"✨ Générer le sujet"}
+                  {busy?"Traitement en cours…":"✨ Générer le sujet"}
                 </button>
               </Card>
               {latexSrc&&(<>
@@ -825,16 +877,14 @@
           </>)}
 
           {step===1&&(<>
-            {subjectMode==="generate"&&(
-              <Card>
-                <p style={{ fontSize:13,color:"#6b7280",marginBottom:12 }}>Téléchargez le PDF du sujet pour le déposer dans Pronote.</p>
-                <button disabled={busy||!libsOk.h2c||!libsOk.jspdf} onClick={downloadSubjectPdf} style={{ width:"100%" }}>
-                  {busy?status:"📥 Télécharger le sujet en PDF"}
-                </button>
-                {(!libsOk.h2c||!libsOk.jspdf)&&<p style={{ fontSize:11,color:"#9ca3af",marginTop:6,textAlign:"center" }}>Chargement des librairies…</p>}
-              </Card>
-            )}
-            {subjectMode==="upload"&&(
+            <Card>
+              <p style={{ fontSize:13,color:"#6b7280",marginBottom:12 }}>Téléchargez le PDF du sujet pour le déposer dans Pronote.</p>
+              <button disabled={busy||!libsOk.h2c||!libsOk.jspdf} onClick={downloadSubjectPdf} style={{ width:"100%" }}>
+                {busy?"Génération du PDF…":"📥 Télécharger le sujet en PDF"}
+              </button>
+              {(!libsOk.h2c||!libsOk.jspdf)&&<p style={{ fontSize:11,color:"#9ca3af",marginTop:6,textAlign:"center" }}>Chargement des librairies…</p>}
+            </Card>
+            {subjectMode==="upload"&&upSubPdfName&&(
               <Card>
                 <div style={{ display:"flex",alignItems:"center",gap:10 }}>
                   <span style={{ fontSize:20 }}>✓</span>
@@ -906,7 +956,7 @@
                   </div>
                 )}
 
-                {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?status:"🤖 Corriger depuis les PDFs avec Gemini ↗"}</button>}
+                {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":"🤖 Corriger depuis les PDFs with Gemini ↗"}</button>}
                 <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou saisir manuellement —</div>
                 {students.map(s=>(
                   <Card key={s.id}>
@@ -917,30 +967,56 @@
                     </Field>
                   </Card>
                 ))}
-                {hasAnswers&&<button disabled={busy||!apiKey} onClick={correctAll} style={{ width:"100%" }}>{busy?status:"🤖 Corriger toutes les copies ↗"}</button>}
+                {hasAnswers&&<button disabled={busy||!apiKey} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger toutes les copies ↗"}</button>}
               </Card>
             )}
+            
+            {/* Amélioration 2 : Écran de relecture actif et modifiable */}
             {corrections.length>0&&(<>
+              <div style={{ background:"#e0f2fe", border:"0.5px solid #bae6fd", borderRadius:10, padding:"12px 14px", marginBottom:16, fontSize:13, color:"#0369a1" }}>
+                📝 <strong>Écran de relecture :</strong> Vous pouvez vérifier et ajuster les notes, appréciations ou conseils générés par l'IA ci-dessous. Les modifications seront prises en compte dans le mail final.
+              </div>
               {students.map(s=>{
                 const c=corrections.find(x=>x.id===s.id);
-                const nc=c&&!isNaN(+c.note)?(+c.note>=10?"#16a34a":"#dc2626"):"#111";
                 return (
                   <Card key={s.id}>
                     <SectionHead title={s.name} right={c&&!c.skipped
                       ?<div style={{ display:"flex",alignItems:"center",gap:8 }}>
                           {c.pageStart&&<Bdg color="info">p.{c.pageStart}–{c.pageEnd}</Bdg>}
-                          <span style={{ fontSize:22,fontWeight:500,color:nc }}>{c.note}<span style={{ fontSize:14,color:"#6b7280" }}>/20</span></span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <input 
+                              type="text" 
+                              value={c.note ?? ""} 
+                              onChange={e => updateCorrection(s.id, 'note', e.target.value)} 
+                              style={{ width: 55, textAlign: "center", fontSize: 14, fontWeight: "600", padding: "3px 6px", border: "1px solid #d1d5db", borderRadius: 6 }}
+                            />
+                            <span style={{ fontSize:13, color:"#6b7280" }}>/20</span>
+                          </div>
                         </div>:null}/>
-                    {c&&!c.skipped?(<>
-                      <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 8px" }}>{c.appreciation}</p>
+                    {c&&!c.skipped?(<div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+                      <Field label="Appréciation générale (modifiable)">
+                        <textarea 
+                          value={c.appreciation || ""} 
+                          onChange={e => updateCorrection(s.id, 'appreciation', e.target.value)} 
+                          style={{ minHeight: 60, fontSize: 13, lineHeight: 1.4 }}
+                        />
+                      </Field>
+                      
                       {c.details?.map((d,i)=>(
                         <div key={i} style={{ display:"flex",justifyContent:"space-between",fontSize:12,padding:"4px 0",borderTop:"0.5px solid #e5e7eb" }}>
                           <span style={{ color:"#6b7280" }}>{d.exercice}</span>
                           <span style={{ fontWeight:500 }}>{d.obtenu}/{d.sur} — {d.remarque}</span>
                         </div>
                       ))}
-                      <p style={{ fontSize:12,color:"#6b7280",fontStyle:"italic",margin:"8px 0 0" }}>💡 {c.conseil}</p>
-                    </>):<p style={{ fontSize:13,color:"#9ca3af",fontStyle:"italic" }}>Copie non trouvée dans le PDF</p>}
+                      
+                      <Field label="Conseil d'amélioration (modifiable)">
+                        <textarea 
+                          value={c.conseil || ""} 
+                          onChange={e => updateCorrection(s.id, 'conseil', e.target.value)} 
+                          style={{ minHeight: 40, fontSize: 12, fontStyle: "italic", lineHeight: 1.4, color: "#1e3a8a" }}
+                        />
+                      </Field>
+                    </div>):<p style={{ fontSize:13,color:"#9ca3af",fontStyle:"italic" }}>Copie non trouvée dans le PDF</p>}
                   </Card>
                 );
               })}
@@ -952,7 +1028,7 @@
                 </button>
                 <input id="late-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={async e=>{
                   const f=e.target.files[0]; if(!f)return;
-                  setBusy(true); setStatus(`Correction de ${f.name}…`);
+                  setBusy(true); setStatus(`Correction de ${f.name}…`); setProgress(20);
                   readPdf(f, async b64 => {
                     setCopiesPdfs(prev=>[...prev,{name:f.name,b64}]);
                     try {
@@ -963,13 +1039,16 @@
                       parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
                       parts.push({ text: "Corrige cette copie en retard (PDF joint).\nSUJET"+(subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc)+"\nCORRIGÉ :\n"+(corrRef||"[utilise tes connaissances]")+"\nRetourne uniquement un tableau JSON contenant un objet représentant la copie : [{\"name\":\"Nom Prénom\",\"pageStart\":1,\"pageEnd\":1,\"note\":14,\"appreciation\":\"...\",\"details\":[{\"exercice\":\"Ex 1\",\"obtenu\":\"7\",\"sur\":\"10\",\"remarque\":\"...\"}],\"conseil\":\"...\"}]" });
                       
+                      setProgress(50);
                       const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds uniquement en JSON pur.", true);
+                      setProgress(90);
                       const arr = JSON.parse(raw.trim());
                       if(arr.length>0){
                         const newC=arr[0];
                         const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
                         setCorrections(prev=>[...prev,{...(existingStudent||{id:Date.now(),name:newC.name,email:""}),...newC}]);
                       }
+                      setProgress(100);
                     } catch(err){console.error(err);}
                     setBusy(false);setStatus("");
                   });
@@ -1009,8 +1088,8 @@
                     <div style={{ fontSize:28,marginBottom:8 }}>✅</div>
                     <span style={{ fontWeight:500,color:"#16a34a" }}>Mails envoyés à tous les élèves !</span>
                   </div>
-                :<button disabled={busy} onClick={sendResults} style={{ width:"100%",marginTop:8 }}>
-                    {busy?status:"📬 Préparer et envoyer les résultats"}
+                : <button disabled={busy} onClick={sendResults} style={{ width:"100%",marginTop:8 }}>
+                    {busy ? "Préparation des envois…" : "📬 Préparer et envoyer les résultats"}
                   </button>
               }
             </Card>
