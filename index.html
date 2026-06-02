@@ -214,7 +214,6 @@
         contents: [{ parts: parts }]
       };
       
-      // AJOUT DE LA TEMPÉRATURE À 0 POUR FIABILISER LA NOTATION
       const generationConfig = {
         temperature: 0
       };
@@ -808,6 +807,9 @@ Structure attendue :
         pdf.save(`corrections_${sessionName.replace(/[^a-z0-9]/gi,"_")}.pdf`);
       };
 
+      // ===============================================
+      // MODIFICATION ÉTAPE 3 : GÉNÉRATION DU PDF NATIVE
+      // ===============================================
       const sendResults = async () => {
         setBusy(true); setProgress(0);
         try {
@@ -822,61 +824,83 @@ Structure attendue :
         let idx = 0;
         for(const c of corrections){
           if(c.skipped||!c.email)continue;
-          setStatus(`Envoi à ${c.name}…`);
+          setStatus(`Création du PDF et Envoi à ${c.name}…`);
           setProgress(Math.round((idx / activeStudents.length) * 100));
+          
           const details=c.details?.map(d=>`• ${d.exercice} : ${d.obtenu}/${d.sur} — ${d.remarque}`).join("\n")||"";
           const prenom = c.name.split(" ")[0];
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\nCordialement,\nF. Nocca`;
+          
+          // Le corps du mail reste plat pour contourner les limitations des clients mails (Gmail/Outlook)
+          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\n👉 IMPORTANT : Ton corrigé mathématique complet est en pièce jointe (format PDF).\n\nCordialement,\nF. Nocca`;
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
 
           try {
-            setStatus(`Génération du corrigé pour ${prenom}…`);
-            const parts = [{ text: "Génère le corrigé détaillé pour " + prenom + " (note : " + c.note + "/20).\n" +
-              "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
-              "DÉTAIL :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
-              "Retourne le corrigé en texte simple lisible. Pour les formules mathématiques, écris-les de façon lisible : f(x) = 2x+3, racine(2), x^2, etc.\n" +
-              "Structure : Exercice 1, question par question avec la solution complète." }];
+            // Création d'un élément temporaire caché pour capturer les belles formules
+            const tempDiv = document.createElement("div");
+            tempDiv.style.position = "absolute";
+            tempDiv.style.top = "-9999px";
+            tempDiv.style.left = "-9999px";
+            tempDiv.style.width = "800px";
+            tempDiv.style.padding = "40px";
+            tempDiv.style.background = "#ffffff";
+            tempDiv.style.color = "#000000";
+            tempDiv.style.fontFamily = "system-ui, sans-serif";
             
-            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte lisible, formules en notation simple.", false);
+            const ncHex = !isNaN(+c.note) ? (+c.note >= 10 ? '#16a34a' : '#dc2626') : '#000000';
+            
+            tempDiv.innerHTML = `
+              <h1 style="font-size: 24px; margin-bottom: 10px;">Corrigé — ${prenom}</h1>
+              <h2 style="font-size: 18px; color: ${ncHex}; margin-bottom: 15px;">Note : ${c.note}/20</h2>
+              <p style="color: #4b5563; margin-bottom: 20px;">${appreciation}</p>
+              <hr style="border: 0; border-top: 1px solid #e5e7eb; margin-bottom: 20px;" />
+              <div style="font-size: 14px; line-height: 1.6;">
+                ${c.latexCorrection ? latexToHtml(c.latexCorrection) : "<i>Aucun corrigé détaillé n'a été généré.</i>"}
+              </div>
+              <hr style="border: 0; border-top: 1px solid #e5e7eb; margin-top: 20px; margin-bottom: 20px;" />
+              <h3 style="font-size: 16px; margin-bottom: 5px;">Conseil :</h3>
+              <p style="color: #1e3a8a; font-style: italic;">${conseil}</p>
+              <p style="margin-top: 30px; font-size: 12px; color: #6b7280;">Cordialement, F. Nocca</p>
+            `;
+            
+            document.body.appendChild(tempDiv);
+            
+            // Petite pause pour laisser le navigateur rendre les styles CSS KaTeX
+            await new Promise(r => setTimeout(r, 100));
 
-            const {jsPDF} = window.jspdf;
-            const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
-            const marg=15, pw=180, lh=5.5;
-            let y = marg;
+            const canvas = await window.html2canvas(tempDiv, { scale: 2, useCORS: true });
+            document.body.removeChild(tempDiv);
 
-            const writeLine = (txt, opts={}) => {
-              if (!txt) return;
-              pdf.setFont("helvetica", opts.bold?"bold":"normal");
-              pdf.setFontSize(opts.size||10);
-              pdf.setTextColor(...(opts.color||[0,0,0]));
-              const lines = pdf.splitTextToSize(String(txt), pw);
-              lines.forEach(line => {
-                if (y > 280) { pdf.addPage(); y = marg; }
-                pdf.text(line, marg, y);
-                y += lh;
-              });
-              y += (opts.after||1);
-            };
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+            const W = pdf.internal.pageSize.getWidth();
+            const H = pdf.internal.pageSize.getHeight();
+            const m = 15;
+            const iw = W - m * 2;
+            let remaining = (canvas.height * iw) / canvas.width;
+            let srcY = 0;
 
-            writeLine(`Corrigé — ${prenom}`, {bold:true, size:14, after:3});
-            const nc = !isNaN(+c.note)?(+c.note>=10?[22,163,74]:[220,38,38]):[0,0,0];
-            writeLine(`Note : ${c.note}/20`, {bold:true, size:12, color:nc, after:3});
-            writeLine(appreciation, {size:10, color:[80,80,80], after:4});
-            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
-            writeLine(corrTexte, {size:10, after:4});
-            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
-            writeLine("Conseil :", {bold:true, size:10, after:1});
-            writeLine(conseil, {size:10, color:[30,64,175], after:4});
-            writeLine("Cordialement, F. Nocca", {size:9, color:[100,100,100]});
+            while (remaining > 0) {
+              const sliceH = Math.min(remaining, H - m * 2);
+              const sc = document.createElement("canvas");
+              const ratio = canvas.width / iw;
+              sc.width = canvas.width;
+              sc.height = sliceH * ratio;
+              sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
+              if (srcY > 0) pdf.addPage();
+              pdf.addImage(sc.toDataURL("image/png"), "PNG", m, m, iw, sliceH);
+              srcY += sliceH;
+              remaining -= sliceH;
+            }
 
             const pdfArrayBuffer = pdf.output("arraybuffer");
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
             pdfFilename = `corrige_${prenom}.pdf`;
 
           } catch(e) { console.error("Erreur PDF corrigé:", e); }
+          
           try {
             await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
           } catch(e) {
@@ -1131,7 +1155,6 @@ Structure attendue :
                         />
                       </Field>
 
-                      {/* NOUVEAU BLOC ÉTAPE 2 : AFFICHAGE DU CORRIGÉ LATEX */}
                       {c.latexCorrection && (
                         <Field label="Corrigé mathématique généré par l'IA">
                           <div
