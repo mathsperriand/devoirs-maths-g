@@ -4,9 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Devoirs Maths - V2</title>
-  <script src="[https://unpkg.com/vue@3/dist/vue.global.js](https://unpkg.com/vue@3/dist/vue.global.js)"></script>
-  <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
-  <script src="[https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js](https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js)"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 text-gray-800 font-sans min-h-screen p-8">
 
@@ -14,7 +13,7 @@
     
     <header class="flex justify-between items-center mb-8">
       <h1 class="text-2xl font-bold text-blue-900">📐 Gestionnaire de Devoirs (V2)</h1>
-      <span class="text-sm text-gray-500 bg-gray-200 px-3 py-1 rounded-full">Brique 1 : Extraction</span>
+      <span class="text-sm text-gray-500 bg-gray-200 px-3 py-1 rounded-full">Fondations : Sujet + Extraction</span>
     </header>
 
     <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
@@ -31,25 +30,54 @@
     </div>
 
     <div v-if="apiKey" class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-      <h2 class="text-lg font-bold text-gray-800 mb-4">👥 Étape 1 : Extraction des élèves</h2>
+      <h2 class="text-lg font-bold text-gray-800 mb-4">📄 Étape 1 : Le Sujet du devoir</h2>
+      <p class="text-sm text-gray-600 mb-4">
+        Chargez le fichier PDF contenant le sujet (et éventuellement le corrigé). Il servira de référence à l'IA pour corriger les copies.
+      </p>
+
+      <div 
+        class="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors"
+        :class="subjectFileName ? 'border-green-300 bg-green-50' : 'border-gray-300 hover:bg-gray-50'"
+        @click="$refs.subjectInput.click()"
+      >
+        <input 
+          type="file" 
+          ref="subjectInput" 
+          accept="application/pdf" 
+          class="hidden" 
+          @change="handleSubjectUpload"
+        >
+        <div v-if="!subjectFileName">
+          <span class="text-gray-500 font-medium">📂 Cliquez ici pour charger le Sujet (PDF)</span>
+        </div>
+        <div v-else class="flex flex-col items-center gap-2">
+          <span class="text-green-600 text-3xl">✓</span>
+          <span class="text-green-800 font-semibold">Sujet chargé : {{ subjectFileName }}</span>
+          <span class="text-xs text-green-600 underline">Cliquez pour modifier</span>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="subjectFileName" class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 opacity-0 transition-opacity duration-500" :class="{'opacity-100': subjectFileName}">
+      <h2 class="text-lg font-bold text-gray-800 mb-4">👥 Étape 2 : Les Copies (Extraction)</h2>
       
       <p class="text-sm text-gray-600 mb-4">
-        Déposez un PDF contenant les copies. L'IA va extraire les noms de manière 100% stricte.
+        Maintenant, déposez le PDF contenant la ou les copies numérisées. L'IA va extraire les noms de manière stricte.
       </p>
 
       <div 
         class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:bg-blue-50 transition-colors"
-        @click="$refs.fileInput.click()"
+        @click="$refs.copiesInput.click()"
       >
         <input 
           type="file" 
-          ref="fileInput" 
+          ref="copiesInput" 
           accept="application/pdf" 
           class="hidden" 
-          @change="handleFileUpload"
+          @change="handleCopiesUpload"
         >
-        <span v-if="!isExtracting" class="text-gray-500 font-medium">📂 Cliquez ici pour charger le PDF des copies</span>
-        <span v-else class="text-blue-600 font-bold animate-pulse">🤖 Lecture du PDF et extraction JSON en cours...</span>
+        <span v-if="!isExtracting" class="text-gray-500 font-medium">📄 Cliquez ici pour charger les Copies (PDF)</span>
+        <span v-else class="text-blue-600 font-bold animate-pulse">🤖 Analyse et extraction des noms en cours...</span>
       </div>
 
       <div v-if="errorMessage" class="mt-4 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
@@ -57,125 +85,6 @@
       </div>
 
       <div v-if="students.length > 0" class="mt-6">
-        <h3 class="text-md font-bold text-gray-700 mb-3">✅ Élèves extraits avec succès ({{ students.length }}) :</h3>
+        <h3 class="text-md font-bold text-gray-700 mb-3">✅ {{ students.length }} élève(s) détecté(s) :</h3>
         <ul class="space-y-2">
-          <li v-for="(student, index) in students" :key="index" class="bg-green-50 border border-green-200 px-4 py-3 rounded-lg flex justify-between items-center">
-            <span class="font-semibold text-green-900">{{ student.name }}</span>
-            <span class="text-sm text-green-700">{{ student.email || 'Email manquant' }}</span>
-          </li>
-        </ul>
-      </div>
-
-    </div>
-  </div>
-
-  <script>
-    const { createApp, ref, onMounted } = Vue;
-
-    createApp({
-      setup() {
-        const apiKey = ref('');
-        const isExtracting = ref(false);
-        const errorMessage = ref('');
-        const students = ref([]);
-
-        // Charger la clé au démarrage
-        onMounted(() => {
-          apiKey.value = localStorage.getItem('gemini_api_key_v2') || '';
-        });
-
-        const saveApiKey = () => {
-          localStorage.setItem('gemini_api_key_v2', apiKey.value);
-        };
-
-        const fileToBase64 = (file) => {
-          return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.readAsDataURL(file);
-            reader.onload = () => resolve(reader.result.split(',')[1]);
-            reader.onerror = error => reject(error);
-          });
-        };
-
-        const handleFileUpload = async (event) => {
-          const file = event.target.files[0];
-          if (!file) return;
-
-          isExtracting.value = true;
-          errorMessage.value = '';
-          students.value = [];
-
-          try {
-            const base64Data = await fileToBase64(file);
-            await extractStudentsFromGemini(base64Data);
-          } catch (error) {
-            console.error(error);
-            errorMessage.value = error.message;
-          } finally {
-            isExtracting.value = false;
-            event.target.value = ''; // Reset input
-          }
-        };
-
-        // LA MAGIE EST ICI : Appel API blindé avec Structured Outputs
-        const extractStudentsFromGemini = async (base64Pdf) => {
-          // Utilisation de v1beta car responseSchema est mieux géré sur les objets complexes dans cette version pour le moment
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey.value}`;
-          
-          const body = {
-            contents: [
-              {
-                parts: [
-                  { inlineData: { mimeType: "application/pdf", data: base64Pdf } },
-                  { text: "Identifie chaque élève présent dans ce document. Extrais le nom complet et l'email (si présent)." }
-                ]
-              }
-            ],
-            generationConfig: {
-              responseMimeType: "application/json",
-              // On OBLIGE l'IA à utiliser cette structure exacte :
-              responseSchema: {
-                type: "ARRAY",
-                description: "Liste des élèves extraits",
-                items: {
-                  type: "OBJECT",
-                  properties: {
-                    name: { type: "STRING", description: "Prénom et Nom de l'élève" },
-                    email: { type: "STRING", description: "Adresse email, laisser vide si introuvable" }
-                  },
-                  required: ["name"]
-                }
-              }
-            }
-          };
-
-          const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body)
-          });
-
-          const data = await response.json();
-
-          if (!response.ok) {
-            throw new Error(data.error?.message || "Erreur de communication avec Gemini.");
-          }
-
-          // Plus besoin de Regex ! La réponse EST du JSON natif.
-          const rawText = data.candidates[0].content.parts[0].text;
-          students.value = JSON.parse(rawText);
-        };
-
-        return {
-          apiKey,
-          saveApiKey,
-          isExtracting,
-          errorMessage,
-          students,
-          handleFileUpload
-        };
-      }
-    }).mount('#app');
-  </script>
-</body>
-</html>
+          <li v-
