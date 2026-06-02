@@ -417,7 +417,7 @@
       const setStep = v => { setStepRaw(v); persist("step",v); };
       const [busy,    setBusy]    = useState(false);
       const [status,  setStatus]  = useState("");
-      const [progress, setProgress] = useState(0); // Amélioration 1 : Barre de progression réelle
+      const [progress, setProgress] = useState(0); 
       const [libsOk,  setLibsOk]  = useState({ h2c: !!window.html2canvas, jspdf: !!window.jspdf });
       const previewRef = useRef(null);
 
@@ -460,7 +460,6 @@
       const setAnswers = v => { setAnswersRaw(v); persist("answers",v); };
       const [corrections, setCorrectionsRaw] = useState(() => load("corrections", []));
       
-      // Amélioration 2 : Support correct des mises à jour fonctionnelles et sauvegarde directe
       const setCorrections = v => {
         if (typeof v === 'function') {
           setCorrectionsRaw(prev => {
@@ -474,7 +473,6 @@
         }
       };
 
-      // Handler pour modifier manuellement une correction sur l'écran de relecture
       const updateCorrection = (id, field, value) => {
         setCorrections(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
       };
@@ -535,7 +533,7 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu es exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
+          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
           const arr = JSON.parse(raw.trim());
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -591,6 +589,9 @@
         setBusy(false);setStatus("");
       };
 
+      // ===============================================
+      // MODIFICATION ÉTAPE 1 : PROMPT CORRECTION (CAS A)
+      // ===============================================
       const correctFromPdf = async () => {
         if (!copiesPdfs.length||!apiKey) return;
         setBusy(true);setStatus("Fusion des PDFs…");setProgress(10);
@@ -601,16 +602,88 @@
         const interval = setInterval(() => {
           setProgress(prev => Math.min(prev + 2, 95));
         }, 700);
+        
         const studentList=students.map(s=>`- ${s.name}`).join("\n");
+        
+        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant à toutes les copies, en éliminant toute subjectivité. Pour la communication avec l'élève, adopte la posture d'un coach bienveillant : tutoie toujours l'élève (tu, ton, ta) et utilise son prénom seul.`;
+
         try {
           const parts = [];
           if (subjectMode==="upload" && upSubPdf) {
             parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
           }
           parts.push({ inlineData: { mimeType: "application/pdf", data: mergedB64 } });
-          parts.push({ text: `Copies des élèves :\n${studentList}\n\nSUJET${subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc}\n\nCORRIGÉ :\n${corrRef||"[utilise tes connaissances]"}\n\nIdentifie chaque copie, ses pages, corrige-la.\nIMPORTANT : dans l'appréciation et le conseil, tutoie l'élève (tu, ton, ta) et utilise son prénom seul.\nRetourne exclusivement un tableau JSON : [{"name":"Nom Prénom","pageStart":1,"pageEnd":2,"note":14,"appreciation":"Lucas, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}]` });
+          parts.push({ text: `Voici les documents et les consignes pour la correction par lot.
+
+LISTE DES ÉLÈVES ATTENDUS :
+${studentList}
+
+SUJET DE MATHÉMATIQUES :
+${subjectMode==="upload"?"[Voir PDF joint]":latexSrc}
+
+CORRIGÉ DE RÉFÉRENCE :
+${corrRef||"[Utilise tes connaissances]"}
+
+COPIES DES ÉLÈVES (Document joint contenant toutes les copies à la suite) :
+Identifie chaque copie, repère ses pages de début et de fin, et effectue la correction selon le protocole strict ci-dessous.
+
+---
+PROTOCOLE DE CORRECTION EN 4 ÉTAPES OBLIGATOIRES
+---
+ÉTAPE 1 : ÉTABLISSEMENT DE LA GRILLE (AVANT DE NOTER)
+Avant toute correction, construis mentalement une grille de notation complète détaillant toutes les sous-questions du sujet (ex: 1a, 1b, etc.) et attribue-leur une valeur en points fixe. Cette grille devient définitive et doit être appliquée STRICTEMENT à tous les élèves sans aucune modification ultérieure. Toute méthode différente du corrigé doit être acceptée si elle est mathématiquement valide.
+
+ÉTAPE 2 : LECTURE INTÉGRALE
+Pour chaque élève, lis l'intégralité de sa copie avant d'attribuer le moindre point. Construis d'abord une vue complète des réponses et de la démarche de l'élève.
+
+ÉTAPE 3 : ÉVALUATION ET APPRÉCIATION
+Évalue chaque sous-question établie à l'étape 1 selon ce barème de niveaux :
+- Réponse exacte et démarche correcte : 100% des points.
+- Méthode correcte mais erreur de calcul / étourderie : 50% des points.
+- Réponse partiellement correcte ou démarche incomplète mais trace de recherche pertinente : 25% des points.
+- Raisonnement faux ou absence de réponse : 0%.
+
+* RÈGLE SUR L'ERREUR PROPAGÉE : Si une valeur erronée obtenue à une question précédente est réutilisée correctement, ne pénalise l'erreur qu'une seule fois. Note les questions suivantes sur la cohérence du raisonnement avec la valeur précédemment obtenue.
+
+* RÈGLE SUR L'APPRÉCIATION : L'appréciation doit être cohérente avec la note globale :
+- 16–20 : Ton très positif, félicitations.
+- 12–15.99 : Positif avec des pistes de progression claires.
+- 8–11.99 : Bilan mitigé, pointe les notions comprises et celles à revoir.
+- Moins de 8 : Encouragements forts et axes de travail prioritaires.
+
+ÉTAPE 4 : AUDIT FINAL ET CONTRÔLE DE COHÉRENCE
+Avant de générer le JSON :
+1. Recalcule une seconde fois la somme des points de chaque sous-question pour valider la note finale. Vérifie que la somme correspond exactement à la note annoncée.
+2. Vérifie qu'aucune erreur n'a été pénalisée deux fois (erreur propagée).
+3. Vérifie que tous les élèves présents dans la liste ont été traités.
+4. Si l'écriture est illisible, qu'une page est manquante ou que l'attribution des points reste ambiguë, positionne l'indicateur 'reviewNeeded' à true.
+
+---
+FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
+---
+Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour, sans balise de bloc de code. Respecte exactement cette structure :
+[
+  {
+    "name": "Nom Prénom de l'élève",
+    "pageStart": 1,
+    "pageEnd": 2,
+    "note": 14.25,
+    "reviewNeeded": false,
+    "appreciation": "[Prénom], ton travail montre...",
+    "details": [
+      {
+        "exercice": "Exercice 1 - Q1a",
+        "sur": 2.0,
+        "obtenu": 1.0,
+        "remarque": "Méthode d'analyse correcte mais erreur de soustraction à la troisième ligne (50%)."
+      }
+    ],
+    "conseil": "Prends le temps de te relire au brouillon.",
+    "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\nOn calcule d'abord la valeur... \\\\[ u_1 = 5 \\\\]"
+  }
+]` });
           
-          const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Dans tes appréciations et conseils, tutoie toujours l'élève et utilise son prénom seul. Réponds uniquement en JSON pur.", true);
+          const raw = await callGemini(apiKey, parts, systemInstruction, true);
           clearInterval(interval); setProgress(100);
           const arr = JSON.parse(raw.trim());
           setCorrections(students.map(s=>{
@@ -621,20 +694,65 @@
         setBusy(false);setStatus("");
       };
 
+      // ===============================================
+      // MODIFICATION ÉTAPE 1 : PROMPT CORRECTION (CAS B)
+      // ===============================================
       const correctAll = async () => {
         if(!apiKey)return;
         setBusy(true);const results=[];setProgress(0);
         let idx = 0;
+        
+        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
+
         for(const s of students){
           const ans=(answers[s.id]||"").trim();
           if(!ans){results.push({...s,skipped:true}); idx++; continue;}
           setStatus(`Correction de ${s.name} (${idx + 1}/${students.length})…`);
           setProgress(Math.round((idx / students.length) * 100));
           try{
-            const parts = [{ text: `Corrige cette copie.\nSUJET:\n${latexSrc}\nCORRIGÉ:\n${corrRef||"[utilise tes connaissances]"}\nCOPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):\n${answers[s.id]}\nIMPORTANT : tutoie l'élève et utilise son prénom seul dans l'appréciation et le conseil.\nJSON uniquement:\n{"note":14,"appreciation":"${s.name.split(" ")[0]}, tu maîtrises...","details":[{"exercice":"Ex 1","obtenu":"7","sur":"10","remarque":"..."}],"conseil":"Tu devrais..."}` }];
-            const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds exclusivement en JSON.", true);
+            const parts = [{ text: `Corrige cette copie individuelle selon le protocole strict ci-dessous.
+
+SUJET DE MATHÉMATIQUES :
+${latexSrc}
+
+CORRIGÉ DE RÉFÉRENCE :
+${corrRef||"[utilise tes connaissances]"}
+
+COPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):
+${answers[s.id]}
+
+---
+PROTOCOLE DE CORRECTION
+---
+1. Décompose la copie selon les sous-questions du sujet. Évalue chaque sous-question sur le barème strict : 100% (juste), 50% (erreur de calcul mineure sur méthode correcte), 25% (démarche incomplète ou trace de recherche pertinente), 0% (faux ou absent).
+2. Ne pénalise pas deux fois une erreur propagée.
+3. Rédige une appréciation cohérente avec la note (16-20: très positif, 12-15.99: positif, 8-11.99: mitigé, <8: encouragements). Tutoie l'élève.
+4. Effectue un contrôle de cohérence mathématique sur la somme des points avant de répondre.
+
+---
+FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
+---
+Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour, sans balise de bloc de code. Toutes les formules du champ 'latexCorrection' doivent utiliser le format LaTeX (avec \\\\[ ... \\\\] pour les formules isolées).
+
+Structure attendue :
+{
+  "note": 14.25,
+  "reviewNeeded": false,
+  "appreciation": "${s.name.split(" ")[0]}, ton travail montre...",
+  "details": [
+    {
+      "exercice": "Exercice 1 - Q1a",
+      "sur": 2.0,
+      "obtenu": 1.0,
+      "remarque": "Méthode correcte mais erreur de calcul."
+    }
+  ],
+  "conseil": "Prends le temps de te relire.",
+  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\nPour résoudre l'équation... \\\\[ f'(x) = 2x \\\\]"
+}` }];
+            const raw = await callGemini(apiKey, parts, systemInstruction, true);
             results.push({...s,...JSON.parse(raw.trim())});
-          }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:""});}
+          }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:"",latexCorrection:""});}
           idx++;
         }
         setProgress(100);
@@ -816,7 +934,6 @@
             })}
           </div>
 
-          {/* Amélioration 1 : Barre de progression réelle globale */}
           {busy && (
             <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, fontSize:13 }}>
@@ -971,7 +1088,6 @@
               </Card>
             )}
             
-            {/* Amélioration 2 : Écran de relecture actif et modifiable */}
             {corrections.length>0&&(<>
               <div style={{ background:"#e0f2fe", border:"0.5px solid #bae6fd", borderRadius:10, padding:"12px 14px", marginBottom:16, fontSize:13, color:"#0369a1" }}>
                 📝 <strong>Écran de relecture :</strong> Vous pouvez vérifier et ajuster les notes, appréciations ou conseils générés par l'IA ci-dessous. Les modifications seront prises en compte dans le mail final.
@@ -982,6 +1098,7 @@
                   <Card key={s.id}>
                     <SectionHead title={s.name} right={c&&!c.skipped
                       ?<div style={{ display:"flex",alignItems:"center",gap:8 }}>
+                          {c.reviewNeeded && <Bdg color="danger">⚠️ À relire</Bdg>}
                           {c.pageStart&&<Bdg color="info">p.{c.pageStart}–{c.pageEnd}</Bdg>}
                           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             <input 
@@ -1037,10 +1154,20 @@
                         parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
                       }
                       parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
-                      parts.push({ text: "Corrige cette copie en retard (PDF joint).\nSUJET"+(subjectMode==="upload"?" (voir PDF joint)":":\n"+latexSrc)+"\nCORRIGÉ :\n"+(corrRef||"[utilise tes connaissances]")+"\nRetourne uniquement un tableau JSON contenant un objet représentant la copie : [{\"name\":\"Nom Prénom\",\"pageStart\":1,\"pageEnd\":1,\"note\":14,\"appreciation\":\"...\",\"details\":[{\"exercice\":\"Ex 1\",\"obtenu\":\"7\",\"sur\":\"10\",\"remarque\":\"...\"}],\"conseil\":\"...\"}]" });
+                      
+                      const sysInstructionLate = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
+                      
+                      parts.push({ text: `Corrige cette copie en retard (PDF joint).
+SUJET : ${subjectMode==="upload"?"(voir PDF joint)":"\n"+latexSrc}
+CORRIGÉ : ${corrRef||"[utilise tes connaissances]"}
+
+PROTOCOLE : Décompose par sous-question (100% juste, 50% erreur de calcul, 25% recherche, 0% faux). Ne pénalise pas deux fois l'erreur propagée. Rédige un corrigé complet en LaTeX.
+
+FORMAT STRICT JSON :
+[{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1 - Q1a","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
                       
                       setProgress(50);
-                      const raw = await callGemini(apiKey, parts, "Tu es correcteur de mathématiques bienveillant. Réponds uniquement en JSON pur.", true);
+                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true);
                       setProgress(90);
                       const arr = JSON.parse(raw.trim());
                       if(arr.length>0){
