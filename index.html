@@ -100,7 +100,6 @@
       const { PDFDocument } = window.PDFLib;
       const merged = await PDFDocument.create();
       for (const p of pdfList) {
-        // FIX MEMOIRE : Boucle for sécurisée au lieu de map/from pour éviter le Call Stack Exceeded sur les gros PDF
         const binaryString = atob(p.b64);
         const len = binaryString.length;
         const bytes = new Uint8Array(len);
@@ -191,8 +190,6 @@
         ? buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename)
         : buildMime(to, subject, body);
       
-      console.log("[Gmail] Tentative d'envoi vers :", to);
-      
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
         headers: { 
@@ -237,12 +234,12 @@
       return "s_" + Date.now();
     }
 
-    /* ── API Google Gemini (PRO 1.5 + RETRY ROBUSTE) ── */
+    /* ── API Google Gemini (PRO 1.5 en v1) ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, retries = 3) {
       if (!apiKey) throw new Error("Clé API manquante");
       
-      // FIX MODEL : Passage explicite au modèle PRO pour éviter les hallucinations JSON sur les PDF
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+      // Utilisation du endpoint v1 et du modèle pro officiel pour éviter l'erreur "not found"
+      const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
       
       for (let i = 0; i < retries; i++) {
         try {
@@ -271,7 +268,7 @@
         } catch (e) {
           console.warn(`[Gemini] Tentative ${i + 1}/${retries} échouée : ${e.message}`);
           if (i === retries - 1) throw e;
-          await new Promise(r => setTimeout(r, 2500 * (i + 1))); // Attente progressive
+          await new Promise(r => setTimeout(r, 2500 * (i + 1))); 
         }
       }
     }
@@ -530,7 +527,6 @@
       };
 
       const addCopiesPdf = (files) => {
-        // FIX IMPORT : Tolérance pour le type MIME ou l'extension .pdf
         const arr = Array.from(files).filter(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
         if (!arr.length) return;
         
@@ -808,10 +804,11 @@
       const sendResults = async () => {
         setBusy(true);
         try {
-          setStatus("Connexion Gmail — choisissez votre compte…");
+          setStatus("Connexion Gmail (Vérifiez la boîte des éléments envoyés du compte que vous allez choisir ici)…");
           await getGmailToken();
         } catch(e) {
           setStatus("❌ " + (e.message || e) + " — Réessayez.");
+          alert("Erreur de connexion Gmail : " + e.message);
           setBusy(false); return;
         }
         let errors = [];
