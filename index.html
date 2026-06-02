@@ -57,7 +57,6 @@
 
     /* ── Gmail OAuth ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
-    const GMAIL_SENDER    = "maths.perriand@gmail.com";
     const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
 
     let gmailAccessToken = null;
@@ -75,7 +74,7 @@
         const client = window.google.accounts.oauth2.initTokenClient({
           client_id: GMAIL_CLIENT_ID,
           scope: GMAIL_SCOPE,
-          login_hint: GMAIL_SENDER,
+          // FIX: Suppression du login_hint codé en dur pour autoriser n'importe quel compte prof
           callback: (resp) => {
             clearTimeout(timer);
             if (settled) return;
@@ -92,6 +91,19 @@
         });
         client.requestAccessToken({ prompt: "select_account" });
       });
+    }
+
+    /* FIX: Nouvelle fonction pour récupérer la vraie adresse email du professeur connecté */
+    async function getGmailUserEmail(token) {
+      try {
+        const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+          headers: { "Authorization": "Bearer " + token }
+        });
+        const data = await res.json();
+        return data.emailAddress;
+      } catch (e) {
+        return "me"; // Fallback accepté par l'API Gmail si le profil échoue
+      }
     }
 
     async function mergePdfs(pdfList) {
@@ -143,9 +155,10 @@
       return btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
     }
 
-    function buildMime(to, subject, body) {
+    // FIX: Ajout du paramètre senderEmail
+    function buildMime(to, subject, body, senderEmail) {
       const msg = [
-        `From: ${GMAIL_SENDER}`,
+        `From: ${senderEmail}`,
         `To: ${to}`,
         `Subject: =?UTF-8?B?${encodeBase64UTF8(subject)}?=`,
         "MIME-Version: 1.0",
@@ -157,10 +170,11 @@
       return b64urlMime(msg);
     }
 
-    function buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename) {
+    // FIX: Ajout du paramètre senderEmail
+    function buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename, senderEmail) {
       const boundary = "boundary_" + Math.random().toString(36).slice(2);
       const parts = [
-        `From: ${GMAIL_SENDER}`,
+        `From: ${senderEmail}`,
         `To: ${to}`,
         `Subject: =?UTF-8?B?${encodeBase64UTF8(subject)}?=`,
         "MIME-Version: 1.0",
@@ -186,9 +200,11 @@
 
     async function sendGmail(to, subject, body, pdfBase64=null, pdfFilename=null) {
       const token = await getGmailToken();
+      const senderEmail = await getGmailUserEmail(token); // Récupération dynamique
+      
       const raw = pdfBase64
-        ? buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename)
-        : buildMime(to, subject, body);
+        ? buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename, senderEmail)
+        : buildMime(to, subject, body, senderEmail);
       
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
@@ -238,7 +254,6 @@
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, retries = 3) {
       if (!apiKey) throw new Error("Clé API manquante");
       
-      // Utilisation du endpoint v1 et du modèle pro officiel pour éviter l'erreur "not found"
       const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
       
       for (let i = 0; i < retries; i++) {
@@ -462,6 +477,18 @@
       const [libsOk,  setLibsOk]  = useState({ h2c: !!window.html2canvas, jspdf: !!window.jspdf });
       const previewRef = useRef(null);
 
+      // FIX: Prévention de perte des PDF chargés en RAM lors du rafraîchissement
+      useEffect(() => {
+        const handleBeforeUnload = (e) => {
+          if (copiesPdfs.length > 0 && step < 3) {
+            e.preventDefault();
+            e.returnValue = "Vos PDFs non sauvegardés seront perdus. Quitter ?";
+          }
+        };
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+      });
+
       useEffect(()=>{ try{localStorage.setItem("prof_maths_gemini_apikey",apiKey);}catch{} },[apiKey]);
 
       /* Étape 0 */
@@ -481,20 +508,9 @@
       const [studentsRaw,   setStudentsRawRaw]   = useState(() => load("studentsRaw", ""));
       const setStudentsRaw = v => { setStudentsRawRaw(v); persist("studentsRaw",v); };
       const [extracting,    setExtracting]        = useState(false);
-      const [copiesPdfs,    setCopiesPdfsRaw]     = useState([]);
-
-      const setCopiesPdfs = (v) => {
-        if (typeof v === 'function') {
-          setCopiesPdfsRaw(prev => {
-            const next = v(prev);
-            persist("copiesPdfsCount", next.length);
-            return next;
-          });
-        } else {
-          setCopiesPdfsRaw(v);
-          persist("copiesPdfsCount", v.length);
-        }
-      };
+      
+      // FIX: Retrait de la persistance trompeuse du nombre de PDF sans les fichiers eux-mêmes.
+      const [copiesPdfs,    setCopiesPdfs]        = useState([]); 
 
       /* Étape 2 */
       const [answers,     setAnswersRaw]     = useState(() => load("answers", {}));
@@ -652,8 +668,9 @@
             alert("⚠️ Action bloquée : Votre clé API Gemini est manquante."); 
             return; 
         }
+        // FIX: Protection contre le clic si les PDF ont été vidés par un rafraîchissement
         if (!copiesPdfs || copiesPdfs.length === 0) { 
-            alert("⚠️ Action bloquée : Aucun fichier PDF n'est chargé pour la correction."); 
+            alert("⚠️ Action bloquée : Aucun fichier PDF n'est chargé en mémoire. (Si vous avez rafraîchi la page, veuillez re-sélectionner les copies PDF dans l'encadré ci-dessus)."); 
             return; 
         }
 
@@ -804,7 +821,7 @@
       const sendResults = async () => {
         setBusy(true);
         try {
-          setStatus("Connexion Gmail (Vérifiez la boîte des éléments envoyés du compte que vous allez choisir ici)…");
+          setStatus("Connexion Gmail en cours...");
           await getGmailToken();
         } catch(e) {
           setStatus("❌ " + (e.message || e) + " — Réessayez.");
@@ -825,7 +842,7 @@
           conseil = conseil.replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu");
           if (c.name) conseil = conseil.split(c.name).join(prenom);
           
-          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nTu trouveras en pièce jointe ton rapport complet avec le corrigé officiel rédigé proprement en notation mathématique.\n\nCordialement,\nF. Nocca`;
+          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nTu trouveras en pièce jointe ton rapport complet avec le corrigé officiel rédigé proprement en notation mathématique.\n\nCordialement.`;
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
           
@@ -857,10 +874,13 @@
             tempDiv.style.lineHeight = "1.6";
             tempDiv.style.fontSize = "14px";
             
+            // FIX: Méthode correcte pour rendre l'élément invisible mais calculable par html2canvas
             tempDiv.style.position = "absolute";
-            tempDiv.style.left = "-9999px";
+            tempDiv.style.left = "0px";
             tempDiv.style.top = "0px";
-            tempDiv.style.zIndex = "9999";
+            tempDiv.style.zIndex = "-1000";
+            tempDiv.style.opacity = "0.01";
+            tempDiv.style.pointerEvents = "none";
             
             document.body.appendChild(tempDiv);
 
@@ -907,13 +927,10 @@
                   ${latexToHtml(corrTexte)}
                 </div>
               </div>
-              
-              <div style="margin-top: 50px; text-align: center; font-size: 11px; color: #9ca3af; border-top: 0.5px solid #e5e7eb; padding-top: 12px;">
-                Document généré automatiquement par l'application Devoirs Maths — Enseignant : F. Nocca
-              </div>
             `;
 
-            await new Promise(r => setTimeout(r, 500));
+            // Délai nécessaire pour que KaTeX compile le rendu mathématique
+            await new Promise(r => setTimeout(r, 800));
 
             const canvas = await window.html2canvas(tempDiv, { 
               scale: 2, 
@@ -1247,8 +1264,7 @@
               </div>
 
               <div style={{ background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:12,color:"#166534" }}>
-                ✉️ Les mails seront envoyés automatiquement depuis <strong>maths.perriand@gmail.com</strong>.<br/>
-                Vérifiez bien la boîte des messages envoyés du compte que vous choisirez lors de l'authentification.
+                ✉️ Les mails seront envoyés automatiquement via le compte que vous choisirez lors de l'authentification (vérifiez les messages envoyés).
               </div>
               {mailsDone
                 ?<div style={{ textAlign:"center",padding:"1.5rem" }}>
