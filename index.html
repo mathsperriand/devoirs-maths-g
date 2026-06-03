@@ -658,6 +658,12 @@ Avant de générer le JSON :
 4. Si l'écriture est illisible, qu'une page est manquante ou que l'attribution des points reste ambiguë, positionne l'indicateur 'reviewNeeded' à true.
 
 ---
+RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE) :
+- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [, jamais (-\\infty, +\\infty)).
+- Tableaux de signes/variations : L'environnement web utilisé ne supporte PAS 'tkz-tab' ni 'tabular'. Utilise uniquement l'environnement '\\begin{array}...\\end{array}' basique ou décris les variations textuellement avec des flèches simples (ex: \\nearrow, \\searrow).
+- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots. Contente-toi de décrire l'allure de la courbe, ses extremums et ses asymptotes textuellement.
+
+---
 FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
 ---
 Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour, sans balise de bloc de code. Respecte exactement cette structure :
@@ -724,6 +730,12 @@ PROTOCOLE DE CORRECTION
 2. Ne pénalise pas deux fois une erreur propagée.
 3. Rédige une appréciation cohérente avec la note (16-20: très positif, 12-15.99: positif, 8-11.99: mitigé, <8: encouragements). Tutoie l'élève.
 4. Effectue un contrôle de cohérence mathématique sur la somme des points avant de répondre.
+
+---
+RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE) :
+- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [, jamais (-\\infty, +\\infty)).
+- Tableaux de signes/variations : L'environnement web utilisé ne supporte PAS 'tkz-tab' ni 'tabular'. Utilise uniquement l'environnement '\\begin{array}...\\end{array}' basique ou décris les variations textuellement avec des flèches simples (ex: \\nearrow, \\searrow).
+- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots. Contente-toi de décrire l'allure de la courbe, ses extremums et ses asymptotes textuellement.
 
 ---
 FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
@@ -807,9 +819,6 @@ Structure attendue :
         pdf.save(`corrections_${sessionName.replace(/[^a-z0-9]/gi,"_")}.pdf`);
       };
 
-      // ===============================================
-      // MODIFICATION ÉTAPE 3 : GÉNÉRATION DU PDF NATIVE
-      // ===============================================
       const sendResults = async () => {
         setBusy(true); setProgress(0);
         try {
@@ -832,13 +841,11 @@ Structure attendue :
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           
-          // Le corps du mail reste plat pour contourner les limitations des clients mails (Gmail/Outlook)
           const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\n👉 IMPORTANT : Ton corrigé mathématique complet est en pièce jointe (format PDF).\n\nCordialement,\nF. Nocca`;
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
 
           try {
-            // Création d'un élément temporaire caché pour capturer les belles formules
             const tempDiv = document.createElement("div");
             tempDiv.style.position = "absolute";
             tempDiv.style.top = "-9999px";
@@ -867,7 +874,6 @@ Structure attendue :
             
             document.body.appendChild(tempDiv);
             
-            // Petite pause pour laisser le navigateur rendre les styles CSS KaTeX
             await new Promise(r => setTimeout(r, 100));
 
             const canvas = await window.html2canvas(tempDiv, { scale: 2, useCORS: true });
