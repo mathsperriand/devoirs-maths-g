@@ -245,6 +245,22 @@
       });
     }
 
+    // Sécurisation du parseur JSON
+    function safeJSONParse(rawText) {
+      try {
+        let cleanRaw = rawText.trim();
+        if (cleanRaw.startsWith('```json')) {
+          cleanRaw = cleanRaw.replace(/^```json/, '').replace(/```$/, '').trim();
+        } else if (cleanRaw.startsWith('```')) {
+          cleanRaw = cleanRaw.replace(/^```/, '').replace(/```$/, '').trim();
+        }
+        return JSON.parse(cleanRaw);
+      } catch (error) {
+        console.error("Erreur de parsing JSON :", error, rawText);
+        throw new Error("L'IA a renvoyé un format illisible. Essayez à nouveau.");
+      }
+    }
+
     function latexToHtml(src) {
       if (!window.katex) return `<pre>${src}</pre>`;
       let html = src
@@ -536,7 +552,7 @@
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
           const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
-          const arr = JSON.parse(raw.trim());
+          const arr = safeJSONParse(raw);
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
             setStudentsRaw(formatted);
@@ -560,8 +576,12 @@
           const sep = res.indexOf("---CORRECTION---");
           setLatexSrc(sep>0?res.slice(0,sep).trim():res);
           setCorrRef(sep>0?res.slice(sep+16).trim():"");
-        } catch(e) { clearInterval(interval); setStatus("Erreur : "+e.message); }
-        setBusy(false); setStatus("");
+          setBusy(false); setStatus("");
+        } catch(e) { 
+          clearInterval(interval); 
+          setStatus("❌ Erreur : " + e.message); 
+          setBusy(false); 
+        }
       };
 
       const downloadSubjectPdf = async () => {
@@ -587,8 +607,11 @@
           }
           pdf.save("sujet_maths.pdf");
           setProgress(100);
-        } catch(e){setStatus("Erreur : "+e.message);}
-        setBusy(false);setStatus("");
+          setBusy(false); setStatus("");
+        } catch(e){
+          setStatus("❌ Erreur : "+e.message);
+          setBusy(false);
+        }
       };
 
       const correctFromPdf = async () => {
@@ -596,7 +619,8 @@
         setBusy(true);setStatus("Fusion des PDFs…");setProgress(10);
         let mergedB64;
         try { mergedB64 = await mergePdfs(copiesPdfs); }
-        catch(e) { setStatus("Erreur fusion PDF : "+e.message); setBusy(false); return; }
+        catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
+        
         setStatus("Lecture et correction par Gemini (cette opération peut être longue)…");setProgress(30);
         const interval = setInterval(() => {
           setProgress(prev => Math.min(prev + 2, 95));
@@ -690,13 +714,23 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour, sans balise de bl
           
           const raw = await callGemini(apiKey, parts, systemInstruction, true);
           clearInterval(interval); setProgress(100);
-          const arr = JSON.parse(raw.trim());
+          
+          const arr = safeJSONParse(raw);
+          
           setCorrections(students.map(s=>{
             const f=arr.find(r=>r.name?.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
             return f?{...s,...f}:{...s,skipped:true};
           }));
-        } catch(e){clearInterval(interval); setStatus("Erreur : "+e.message);}
-        setBusy(false);setStatus("");
+          
+          setBusy(false);
+          setStatus("✅ Correction terminée");
+          setTimeout(() => setStatus(""), 4000);
+          
+        } catch(e) {
+          clearInterval(interval); 
+          setStatus("❌ Erreur : " + e.message);
+          setBusy(false);
+        }
       };
 
       const correctAll = async () => {
@@ -759,12 +793,17 @@ Structure attendue :
   "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\nPour résoudre l'équation... \\\\[ f'(x) = 2x \\\\]"
 }` }];
             const raw = await callGemini(apiKey, parts, systemInstruction, true);
-            results.push({...s,...JSON.parse(raw.trim())});
-          }catch{results.push({...s,note:"?",appreciation:"Erreur.",details:[],conseil:"",latexCorrection:""});}
+            results.push({...s,...safeJSONParse(raw)});
+          } catch(e) {
+            results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
+          }
           idx++;
         }
         setProgress(100);
-        setCorrections(results);setBusy(false);setStatus("");
+        setCorrections(results);
+        setBusy(false);
+        setStatus("✅ Correction terminée");
+        setTimeout(() => setStatus(""), 4000);
       };
 
       const exportCsv = () => {
@@ -833,80 +872,61 @@ Structure attendue :
         let idx = 0;
         for(const c of corrections){
           if(c.skipped||!c.email)continue;
-          setStatus(`Création du PDF et Envoi à ${c.name}…`);
+          setStatus(`Envoi à ${c.name}…`);
           setProgress(Math.round((idx / activeStudents.length) * 100));
-          
           const details=c.details?.map(d=>`• ${d.exercice} : ${d.obtenu}/${d.sur} — ${d.remarque}`).join("\n")||"";
           const prenom = c.name.split(" ")[0];
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          
-          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\n👉 IMPORTANT : Ton corrigé mathématique complet est en pièce jointe (format PDF).\n\nCordialement,\nF. Nocca`;
+          const body=`Bonjour ${prenom},\n\nVoici ton résultat pour ce devoir de mathématiques.\n\nNOTE : ${c.note}/20\n\nAppréciation :\n${appreciation}\n\nDétail :\n${details}\n\nConseil :\n${conseil}\n\nCordialement,\nF. Nocca`;
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
 
           try {
-            const tempDiv = document.createElement("div");
-            tempDiv.style.position = "absolute";
-            tempDiv.style.top = "-9999px";
-            tempDiv.style.left = "-9999px";
-            tempDiv.style.width = "800px";
-            tempDiv.style.padding = "40px";
-            tempDiv.style.background = "#ffffff";
-            tempDiv.style.color = "#000000";
-            tempDiv.style.fontFamily = "system-ui, sans-serif";
+            setStatus(`Génération du corrigé pour ${prenom}…`);
+            const parts = [{ text: "Génère le corrigé détaillé pour " + prenom + " (note : " + c.note + "/20).\n" +
+              "SUJET :\n" + (latexSrc||"[sujet fourni en PDF]") + "\n\n" +
+              "DÉTAIL :\n" + (c.details||[]).map(d=>d.exercice+" : "+d.remarque).join("\n") + "\n\n" +
+              "Retourne le corrigé en texte simple lisible. Pour les formules mathématiques, écris-les de façon lisible : f(x) = 2x+3, racine(2), x^2, etc.\n" +
+              "Structure : Exercice 1, question par question avec la solution complète." }];
             
-            const ncHex = !isNaN(+c.note) ? (+c.note >= 10 ? '#16a34a' : '#dc2626') : '#000000';
-            
-            tempDiv.innerHTML = `
-              <h1 style="font-size: 24px; margin-bottom: 10px;">Corrigé — ${prenom}</h1>
-              <h2 style="font-size: 18px; color: ${ncHex}; margin-bottom: 15px;">Note : ${c.note}/20</h2>
-              <p style="color: #4b5563; margin-bottom: 20px;">${appreciation}</p>
-              <hr style="border: 0; border-top: 1px solid #e5e7eb; margin-bottom: 20px;" />
-              <div style="font-size: 14px; line-height: 1.6;">
-                ${c.latexCorrection ? latexToHtml(c.latexCorrection) : "<i>Aucun corrigé détaillé n'a été généré.</i>"}
-              </div>
-              <hr style="border: 0; border-top: 1px solid #e5e7eb; margin-top: 20px; margin-bottom: 20px;" />
-              <h3 style="font-size: 16px; margin-bottom: 5px;">Conseil :</h3>
-              <p style="color: #1e3a8a; font-style: italic;">${conseil}</p>
-              <p style="margin-top: 30px; font-size: 12px; color: #6b7280;">Cordialement, F. Nocca</p>
-            `;
-            
-            document.body.appendChild(tempDiv);
-            
-            await new Promise(r => setTimeout(r, 100));
+            const corrTexte = await callGemini(apiKey, parts, "Tu es professeur de maths. Texte lisible, formules en notation simple.", false);
 
-            const canvas = await window.html2canvas(tempDiv, { scale: 2, useCORS: true });
-            document.body.removeChild(tempDiv);
+            const {jsPDF} = window.jspdf;
+            const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
+            const marg=15, pw=180, lh=5.5;
+            let y = marg;
 
-            const { jsPDF } = window.jspdf;
-            const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-            const W = pdf.internal.pageSize.getWidth();
-            const H = pdf.internal.pageSize.getHeight();
-            const m = 15;
-            const iw = W - m * 2;
-            let remaining = (canvas.height * iw) / canvas.width;
-            let srcY = 0;
+            const writeLine = (txt, opts={}) => {
+              if (!txt) return;
+              pdf.setFont("helvetica", opts.bold?"bold":"normal");
+              pdf.setFontSize(opts.size||10);
+              pdf.setTextColor(...(opts.color||[0,0,0]));
+              const lines = pdf.splitTextToSize(String(txt), pw);
+              lines.forEach(line => {
+                if (y > 280) { pdf.addPage(); y = marg; }
+                pdf.text(line, marg, y);
+                y += lh;
+              });
+              y += (opts.after||1);
+            };
 
-            while (remaining > 0) {
-              const sliceH = Math.min(remaining, H - m * 2);
-              const sc = document.createElement("canvas");
-              const ratio = canvas.width / iw;
-              sc.width = canvas.width;
-              sc.height = sliceH * ratio;
-              sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
-              if (srcY > 0) pdf.addPage();
-              pdf.addImage(sc.toDataURL("image/png"), "PNG", m, m, iw, sliceH);
-              srcY += sliceH;
-              remaining -= sliceH;
-            }
+            writeLine(`Corrigé — ${prenom}`, {bold:true, size:14, after:3});
+            const nc = !isNaN(+c.note)?(+c.note>=10?[22,163,74]:[220,38,38]):[0,0,0];
+            writeLine(`Note : ${c.note}/20`, {bold:true, size:12, color:nc, after:3});
+            writeLine(appreciation, {size:10, color:[80,80,80], after:4});
+            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
+            writeLine(corrTexte, {size:10, after:4});
+            pdf.setDrawColor(200,200,200); pdf.line(marg, y, marg+pw, y); y+=4;
+            writeLine("Conseil :", {bold:true, size:10, after:1});
+            writeLine(conseil, {size:10, color:[30,64,175], after:4});
+            writeLine("Cordialement, F. Nocca", {size:9, color:[100,100,100]});
 
             const pdfArrayBuffer = pdf.output("arraybuffer");
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
             pdfFilename = `corrige_${prenom}.pdf`;
 
           } catch(e) { console.error("Erreur PDF corrigé:", e); }
-          
           try {
             await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
           } catch(e) {
@@ -1217,15 +1237,21 @@ FORMAT STRICT JSON :
                       setProgress(50);
                       const raw = await callGemini(apiKey, parts, sysInstructionLate, true);
                       setProgress(90);
-                      const arr = JSON.parse(raw.trim());
+                      const arr = safeJSONParse(raw);
                       if(arr.length>0){
                         const newC=arr[0];
                         const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
                         setCorrections(prev=>[...prev,{...(existingStudent||{id:Date.now(),name:newC.name,email:""}),...newC}]);
                       }
                       setProgress(100);
-                    } catch(err){console.error(err);}
-                    setBusy(false);setStatus("");
+                      setBusy(false);
+                      setStatus("✅ Copie ajoutée");
+                      setTimeout(() => setStatus(""), 3000);
+                    } catch(err){
+                      console.error(err);
+                      setStatus("❌ Erreur : " + err.message);
+                      setBusy(false);
+                    }
                   });
                 }}/>
               </div>
