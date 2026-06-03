@@ -123,7 +123,7 @@
         .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
     }
 
-    function buildMime(to, subject, body) {
+    function buildMime(to, subject, bodyHtml) {
       const msg = [
         `From: ${GMAIL_SENDER}`,
         `To: ${to}`,
@@ -132,12 +132,12 @@
         "Content-Type: text/html; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        btoa(unescape(encodeURIComponent(body)))
+        btoa(unescape(encodeURIComponent(bodyHtml)))
       ].join("\r\n");
       return b64url(msg);
     }
 
-    function buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename) {
+    function buildMimeWithPdf(to, subject, bodyHtml, pdfBase64, pdfFilename) {
       const boundary = "boundary_" + Math.random().toString(36).slice(2);
       const parts = [
         `From: ${GMAIL_SENDER}`,
@@ -150,7 +150,7 @@
         "Content-Type: text/html; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        btoa(unescape(encodeURIComponent(body))),
+        btoa(unescape(encodeURIComponent(bodyHtml))),
         "",
         `--${boundary}`,
         `Content-Type: application/pdf; name="${pdfFilename}"`,
@@ -164,11 +164,11 @@
       return b64url(parts);
     }
 
-    async function sendGmail(to, subject, body, pdfBase64=null, pdfFilename=null) {
+    async function sendGmail(to, subject, bodyHtml, pdfBase64=null, pdfFilename=null) {
       const token = await getGmailToken();
       const raw   = pdfBase64
-        ? buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename)
-        : buildMime(to, subject, body);
+        ? buildMimeWithPdf(to, subject, bodyHtml, pdfBase64, pdfFilename)
+        : buildMime(to, subject, bodyHtml);
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
         headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
@@ -245,7 +245,6 @@
       });
     }
 
-    // Sécurisation du parseur JSON
     function safeJSONParse(rawText) {
       try {
         let cleanRaw = rawText.trim();
@@ -293,6 +292,20 @@
         .replace(/\\[a-zA-Z]+/g, '')
         .replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
       return '<p style="margin:6px 0">' + html + '</p>';
+    }
+
+    function simpleLatexToHtml(str) {
+      if (!str) return "";
+      return str
+        .replace(/</g, "&lt;").replace(/>/g, "&gt;") 
+        .replace(/\n/g, "<br/>")
+        .replace(/\$([^\$\n]+)\$/g, "<i>$1</i>") 
+        .replace(/\\infty/g, "∞")
+        .replace(/\\rightarrow/g, "→")
+        .replace(/\\leq/g, "≤")
+        .replace(/\\geq/g, "≥")
+        .replace(/\\neq/g, "≠")
+        .replace(/\\approx/g, "≈");
     }
 
     function Card({ children }) {
@@ -443,7 +456,7 @@
 
       /* Étape 0 */
       const [subjectMode,  setSubjectModeRaw]  = useState(() => load("subjectMode", "generate"));
-      const setSubjectMode = v => { subjectModeRaw(v); persist("subjectMode",v); };
+      const setSubjectMode = v => { setSubjectModeRaw(v); persist("subjectMode",v); };
       const [consignes,    setConsignesRaw]    = useState(() => load("consignes", ""));
       const setConsignes = v => { setConsignesRaw(v); persist("consignes",v); };
       const [latexSrc,     setLatexSrcRaw]     = useState(() => load("latexSrc", ""));
@@ -551,7 +564,7 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu es extrait exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
+          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
           const arr = safeJSONParse(raw);
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -870,157 +883,114 @@ Structure attendue :
         let errors = [];
         const activeStudents = corrections.filter(c => !c.skipped && c.email);
         let idx = 0;
+        
         for(const c of corrections){
           if(c.skipped||!c.email)continue;
           setStatus(`Envoi à ${c.name}…`);
           setProgress(Math.round((idx / activeStudents.length) * 100));
+          
           const prenom = c.name.split(" ")[0];
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const detailsHtml = c.details?.map(d=>`<li><strong>${d.exercice}</strong> : ${d.obtenu}/${d.sur} &mdash; ${d.remarque}</li>`).join("")||"";
           
-          const body = `
-            <div style="font-family: system-ui, -apple-system, sans-serif; color: #111827; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
-              <h2 style="color: #1d4ed8; margin-top: 0; margin-bottom: 16px; font-size: 20px;">Bonjour ${prenom},</h2>
-              <p style="font-size: 15px; margin-bottom: 24px; line-height: 1.5;">Voici ton résultat pour le devoir de mathématiques : <strong>${sessionName}</strong>.</p>
-              
-              <div style="background-color: #f3f4f6; padding: 16px; border-radius: 8px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-size: 16px; font-weight: 500; color: #374151;">Note globale :</span>
-                <span style="font-size: 24px; font-weight: bold; color: ${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">${c.note}/20</span>
+          // Corps du mail en HTML stylisé (avec formatage mathématique simple)
+          const bodyHtml = `
+            <div style="font-family: system-ui, -apple-system, sans-serif; color: #111827; line-height: 1.6; max-width: 600px;">
+              <p>Bonjour ${prenom},</p>
+              <p>Voici ton résultat pour ce devoir de mathématiques.</p>
+              <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                <h2 style="margin: 0 0 10px 0; color: ${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">NOTE : ${c.note}/20</h2>
+                <p style="margin: 0;"><strong>Appréciation :</strong><br/>${simpleLatexToHtml(appreciation)}</p>
               </div>
-              
-              <div style="margin-bottom: 20px;">
-                <h3 style="font-size: 15px; color: #4b5563; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; font-weight: 600;">Appréciation :</h3>
-                <p style="font-size: 14px; line-height: 1.6; color: #111827; white-space: pre-line; margin: 0;">${appreciation}</p>
-              </div>
-              
-              ${detailsHtml ? `
-              <div style="margin-bottom: 20px;">
-                <h3 style="font-size: 15px; color: #4b5563; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; font-weight: 600;">Détail par exercice :</h3>
-                <ul style="font-size: 14px; line-height: 1.6; color: #374151; padding-left: 20px; margin: 0;">${detailsHtml}</ul>
-              </div>
-              ` : ''}
-              
-              ${conseil ? `
-              <div style="margin-bottom: 24px; background-color: #eff6ff; padding: 14px; border-left: 4px solid #3b82f6; border-radius: 0 8px 8px 0;">
-                <h4 style="font-size: 14px; color: #1e40af; margin: 0 0 6px 0; font-weight: 600;">Conseil d'amélioration :</h4>
-                <p style="font-size: 14px; margin: 0; color: #1e3a8a; font-style: italic; line-height: 1.5;">${conseil}</p>
-              </div>
-              ` : ''}
-              
-              <div style="background-color: #fff7ed; border: 1px solid #ffedd5; padding: 14px; border-radius: 8px; margin-bottom: 24px; font-size: 13px; color: #c2410c; line-height: 1.5;">
-                ℹ️ <strong>Rendu mathématique :</strong> Retrouve ton corrigé complet personnalisé avec toutes les formules et équations parfaitement formatées (LaTeX) dans le fichier <strong>PDF joint</strong> à ce message.
-              </div>
-              
-              <p style="font-size: 14px; margin-top: 28px; margin-bottom: 0; color: #6b7280; line-height: 1.5;">Cordialement,<br><strong style="color: #111827; font-size: 15px;">F. Nocca</strong></p>
+              <p><strong>Détail par exercice :</strong></p>
+              <ul style="padding-left: 20px;">
+                ${(c.details||[]).map(d => `<li style="margin-bottom: 5px;"><b>${d.exercice}</b> : ${d.obtenu}/${d.sur} — ${simpleLatexToHtml(d.remarque)}</li>`).join("")}
+              </ul>
+              ${conseil ? `<p style="margin-top: 15px;"><strong>Conseil :</strong><br/><span style="color: #1d4ed8;">${simpleLatexToHtml(conseil)}</span></p>` : ""}
+              <p style="margin-top: 25px; padding-top: 15px; border-top: 1px solid #e5e7eb;">
+                <em>📄 Le corrigé complet et détaillé avec les formules mathématiques correctement formatées se trouve dans le PDF en pièce jointe.</em>
+              </p>
+              <p style="color: #6b7280; font-size: 13px;">Cordialement,<br/>F. Nocca</p>
             </div>
           `;
-
+          
           const subject=`Résultats – ${sessionName}`;
           let pdfB64=null, pdfFilename=null;
 
           try {
-            setStatus(`Génération du PDF mis en forme pour ${prenom}…`);
+            setStatus(`Génération du PDF pour ${prenom}…`);
             
-            const tempDiv = document.createElement("div");
-            tempDiv.style.position = "absolute";
-            tempDiv.style.left = "-9999px";
-            tempDiv.style.top = "0";
-            tempDiv.style.width = "750px";
-            tempDiv.style.background = "#ffffff";
-            tempDiv.style.color = "#111827";
-            tempDiv.style.padding = "40px";
-            tempDiv.style.fontFamily = "system-ui, -apple-system, sans-serif";
-            tempDiv.style.lineHeight = "1.6";
+            // Création d'une div invisible pour le rendu exact KaTeX + HTML
+            const hiddenDiv = document.createElement("div");
+            hiddenDiv.style.position = "absolute";
+            hiddenDiv.style.top = "-9999px";
+            hiddenDiv.style.left = "-9999px";
+            hiddenDiv.style.width = "800px";
+            hiddenDiv.style.padding = "40px";
+            hiddenDiv.style.background = "#ffffff";
+            hiddenDiv.style.color = "#111827";
+            hiddenDiv.style.fontFamily = "system-ui, -apple-system, sans-serif";
             
-            tempDiv.innerHTML = `
-              <div style="text-align: center; margin-bottom: 24px; border-bottom: 2px solid #e5e7eb; padding-bottom: 16px;">
-                <h1 style="font-size: 24px; margin-bottom: 4px;">Rapport de Correction Individuel</h1>
-                <h2 style="font-size: 18px; color: #4b5563; font-weight: normal;">${sessionName}</h2>
+            const latexHtml = c.latexCorrection ? latexToHtml(c.latexCorrection) : '<p style="font-style:italic">Aucun corrigé détaillé disponible.</p>';
+            
+            hiddenDiv.innerHTML = `
+              <div style="border-bottom: 2px solid #e5e7eb; padding-bottom: 20px; margin-bottom: 20px;">
+                <h1 style="font-size:28px; margin:0 0 10px 0;">Corrigé — ${prenom}</h1>
+                <h2 style="font-size:24px; margin:0; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</h2>
               </div>
-              <div style="margin-bottom: 24px; background: #f3f4f6; padding: 16px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em;">Élève</div>
-                  <div style="font-size: 18px; font-weight: bold; color: #111827;">${c.name}</div>
+              <div style="font-size:16px; line-height:1.6; margin-bottom: 20px;">
+                <strong>Appréciation :</strong> ${simpleLatexToHtml(appreciation)}
+              </div>
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <h3 style="margin-top:0; font-size:18px;">Corrigé détaillé</h3>
+                <div style="font-size:15px; line-height:1.8;">
+                  ${latexHtml}
                 </div>
-                <div style="text-align: right;">
-                  <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em;">Note Finale</div>
-                  <div style="font-size: 24px; font-weight: bold; color: ${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'}">${c.note}/20</div>
-                </div>
               </div>
-              <div style="margin-bottom: 24px;">
-                <h3 style="font-size: 16px; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; color: #374151;">Appréciation globale</h3>
-                <p style="font-size: 14px; color: #1f2937; white-space: pre-line;">${appreciation}</p>
-              </div>
-              ${c.details && c.details.length > 0 ? `
-              <div style="margin-bottom: 24px;">
-                <h3 style="font-size: 16px; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; color: #374151;">Détail des points</h3>
-                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                  <thead>
-                    <tr style="background: #f9fafb; border-bottom: 1px solid #e5e7eb;">
-                      <th style="text-align: left; padding: 8px; color: #4b5563;">Exercice / Question</th>
-                      <th style="text-align: right; padding: 8px; width: 100px; color: #4b5563;">Score</th>
-                      <th style="text-align: left; padding: 8px; color: #4b5563;">Remarque</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${c.details.map(d => `
-                      <tr style="border-bottom: 1px solid #f3f4f6;">
-                        <td style="padding: 8px; font-weight: 500; color: #111827;">${d.exercice}</td>
-                        <td style="padding: 8px; text-align: right; font-weight: bold; color: #111827;">${d.obtenu} / ${d.sur}</td>
-                        <td style="padding: 8px; color: #4b5563;">${d.remarque || ''}</td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              </div>
-              ` : ''}
               ${conseil ? `
-              <div style="margin-bottom: 24px; background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px; border-radius: 0 8px 8px 0;">
-                <h4 style="font-size: 14px; margin: 0 0 4px 0; color: #1e40af; font-weight: bold;">Conseil d'amélioration</h4>
-                <p style="font-size: 13px; color: #1e3a8a; font-style: italic; margin: 0;">${conseil}</p>
-              </div>
-              ` : ''}
-              <div style="margin-top: 32px;">
-                <h3 style="font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; color: #374151;">Corrigé détaillé</h3>
-                <div style="font-size: 14px; line-height: 1.7; color: #111827;">
-                  ${latexToHtml(c.latexCorrection || '')}
-                </div>
-              </div>
+              <div style="font-size:16px; line-height:1.6; padding: 15px; background: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 4px;">
+                <strong>Conseil :</strong> ${simpleLatexToHtml(conseil)}
+              </div>` : ""}
             `;
-            document.body.appendChild(tempDiv);
-
-            const canvas = await window.html2canvas(tempDiv, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
-            const { jsPDF } = window.jspdf;
-            const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-            const W = pdf.internal.pageSize.getWidth(), H = pdf.internal.pageSize.getHeight(), m = 15;
-            const iw = W - m * 2;
-            let remaining = (canvas.height * iw) / canvas.width, srcY = 0;
             
-            while (remaining > 0) {
-              const sliceH = Math.min(remaining, H - m * 2);
+            document.body.appendChild(hiddenDiv);
+            
+            // Laisse un millième de seconde au navigateur pour appliquer les styles CSS
+            await new Promise(r => setTimeout(r, 50));
+            
+            const canvas = await window.html2canvas(hiddenDiv, {scale: 2, useCORS: true, backgroundColor: "#ffffff"});
+            document.body.removeChild(hiddenDiv);
+
+            const {jsPDF} = window.jspdf;
+            const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
+            const W = pdf.internal.pageSize.getWidth();
+            const H = pdf.internal.pageSize.getHeight();
+            const m = 15;
+            const iw = W - m*2;
+            let remaining = (canvas.height * iw) / canvas.width;
+            let srcY = 0;
+            
+            while(remaining > 0) {
+              const sliceH = Math.min(remaining, H - m*2);
               const sc = document.createElement("canvas");
               const ratio = canvas.width / iw;
               sc.width = canvas.width;
               sc.height = sliceH * ratio;
               sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
-              if (srcY > 0) pdf.addPage();
+              if(srcY > 0) pdf.addPage();
               pdf.addImage(sc.toDataURL("image/png"), "PNG", m, m, iw, sliceH);
               srcY += sliceH;
               remaining -= sliceH;
             }
-
+            
             const pdfArrayBuffer = pdf.output("arraybuffer");
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
-            pdfFilename = `corrige_${prenom}.pdf`;
-            document.body.removeChild(tempDiv);
+            pdfFilename = `corrige_${prenom.replace(/[^a-z0-9]/gi,"_")}.pdf`;
 
-          } catch(e) { 
-            console.error("Erreur PDF corrigé:", e); 
-          }
+          } catch(e) { console.error("Erreur PDF corrigé:", e); }
           
           try {
-            await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
+            await sendGmail(c.email, subject, bodyHtml, pdfB64, pdfFilename);
           } catch(e) {
             errors.push(c.name);
             console.error("Erreur envoi " + c.name, e);
