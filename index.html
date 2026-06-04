@@ -123,7 +123,6 @@
         .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
     }
 
-    // Indispensable pour éviter le rejet SMTP "Line too long"
     function chunkBase64(str) {
       if (!str) return "";
       const chunks = [];
@@ -219,7 +218,8 @@
 
     /* ── API Google Gemini ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+      // UTILISATION DU MODÈLE PRO POUR UNE MEILLEURE LECTURE MANUSCRITE
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`;
       const body = {
         contents: [{ parts: parts }]
       };
@@ -448,19 +448,10 @@
       const [status,  setStatus]  = useState("");
       const [progress, setProgress] = useState(0); 
       const [libsOk,  setLibsOk]  = useState({ h2c: !!window.html2canvas, jspdf: !!window.jspdf });
-      const previewRef = useRef(null);
 
       useEffect(()=>{ try{localStorage.setItem("prof_maths_gemini_apikey",apiKey);}catch{} },[apiKey]);
 
       /* Étape 0 */
-      const [subjectMode,  setSubjectModeRaw]  = useState(() => load("subjectMode", "generate"));
-      const setSubjectMode = v => { setSubjectModeRaw(v); persist("subjectMode",v); };
-      const [consignes,    setConsignesRaw]    = useState(() => load("consignes", ""));
-      const setConsignes = v => { setConsignesRaw(v); persist("consignes",v); };
-      const [latexSrc,     setLatexSrcRaw]     = useState(() => load("latexSrc", ""));
-      const setLatexSrc = v => { setLatexSrcRaw(v); persist("latexSrc",v); };
-      const [corrRef,      setCorrRefRaw]      = useState(() => load("corrRef", ""));
-      const setCorrRef = v => { setCorrRefRaw(v); persist("corrRef",v); };
       const [upSubPdf,     setUpSubPdf]        = useState(null);
       const [upSubPdfName, setUpSubPdfNameRaw] = useState(() => load("upSubPdfName", ""));
       const setUpSubPdfName = v => { setUpSubPdfNameRaw(v); persist("upSubPdfName",v); };
@@ -520,7 +511,7 @@
       const validCorrs  = corrections.filter(c=>!c.skipped);
       const avg         = validCorrs.filter(c=>!isNaN(+c.note)).reduce((a,c,_,arr)=>a+ +c.note/arr.length,0);
       const copiesPdfName = copiesPdfs.map(p=>p.name).join(", ");
-      const canNext     = [(subjectMode==="generate"?!!latexSrc:!!upSubPdf), true, corrections.length>0, true][step];
+      const canNext     = [!!upSubPdf, true, corrections.length>0, true][step];
 
       const readPdf = (file, cb) => {
         const r = new FileReader(); r.onload = e => cb(e.target.result.split(",")[1]); r.readAsDataURL(file);
@@ -574,59 +565,6 @@
         setExtracting(false);
       };
 
-      const generateSubject = async () => {
-        if (!consignes.trim()||!apiKey) return;
-        setBusy(true); setStatus("Génération du sujet avec Gemini…"); setProgress(15);
-        const interval = setInterval(() => {
-          setProgress(prev => Math.min(prev + 5, 90));
-        }, 300);
-        try {
-          const parts = [{ text: `Génère un sujet de mathématiques en LaTeX selon ces consignes :\n${consignes}\n\nRetourne UNIQUEMENT le contenu LaTeX (sans \\documentclass ni \\begin{document}), puis la correction séparée par ---CORRECTION--- :\n\n\\begin{center}\n{\\Large\\textbf{Devoir de mathématiques}}\\\\[4pt]\n{\\normalsize [Niveau] \\hfill Durée : 1h}\n\\end{center}\n\\vspace{8pt}\n\\section*{Exercice 1 --- [titre] \\hfill (X points)}\n\\begin{enumerate}\n  \\item Énoncé avec $f(x) = ...$\n\\end{enumerate}\n\n---CORRECTION---\n\\section*{Corrigé exercice 1}\n...` }];
-          const res = await callGemini(apiKey, parts, "Tu es professeur de mathématiques au lycée français. LaTeX rigoureux pour toutes les formules.", false);
-          clearInterval(interval); setProgress(100);
-          const sep = res.indexOf("---CORRECTION---");
-          setLatexSrc(sep>0?res.slice(0,sep).trim():res);
-          setCorrRef(sep>0?res.slice(sep+16).trim():"");
-          setBusy(false); setStatus("");
-        } catch(e) { 
-          clearInterval(interval); 
-          setStatus("❌ Erreur : " + e.message); 
-          setBusy(false); 
-        }
-      };
-
-      const downloadSubjectPdf = async () => {
-        if (!previewRef.current||!libsOk.h2c||!libsOk.jspdf) return;
-        setBusy(true); setStatus("Génération du PDF…"); setProgress(15);
-        try {
-          const el=previewRef.current;
-          // OPTIMISATION : scale=1.5 pour diviser le poids et préserver la qualité
-          const canvas=await window.html2canvas(el,{scale:1.5,useCORS:true,backgroundColor:"#ffffff"});
-          setProgress(45);
-          const {jsPDF}=window.jspdf;
-          const pdf=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
-          const W=pdf.internal.pageSize.getWidth(),H=pdf.internal.pageSize.getHeight(),m=15;
-          const iw=W-m*2; let remaining=(canvas.height*iw)/canvas.width,srcY=0;
-          while(remaining>0){
-            const sliceH=Math.min(remaining,H-m*2);
-            const sc=document.createElement("canvas");const ratio=canvas.width/iw;
-            sc.width=canvas.width;sc.height=sliceH*ratio;
-            sc.getContext("2d").drawImage(canvas,0,srcY*ratio,canvas.width,sliceH*ratio,0,0,canvas.width,sliceH*ratio);
-            if(srcY>0)pdf.addPage();
-            // OPTIMISATION : Compression JPEG à 80% (divise le poids par 10 vs PNG)
-            pdf.addImage(sc.toDataURL("image/jpeg", 0.8),"JPEG",m,m,iw,sliceH, undefined, 'FAST');
-            srcY+=sliceH;remaining-=sliceH;
-            setProgress(Math.min(45 + Math.round((srcY / ((canvas.height*iw)/canvas.width)) * 50), 95));
-          }
-          pdf.save("sujet_maths.pdf");
-          setProgress(100);
-          setBusy(false); setStatus("");
-        } catch(e){
-          setStatus("❌ Erreur : "+e.message);
-          setBusy(false);
-        }
-      };
-
       const correctFromPdf = async () => {
         if (!copiesPdfs.length||!apiKey) return;
         setBusy(true);setStatus("Fusion des PDFs…");setProgress(10);
@@ -641,11 +579,11 @@
         
         const studentList=students.map(s=>`- ${s.name}`).join("\n");
         
-        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant à toutes les copies, en éliminant toute subjectivité. Pour la communication avec l'élève, adopte la posture d'un coach bienveillant : tutoie toujours l'élève (tu, ton, ta) et utilise son prénom seul.`;
+        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant à toutes les copies. Les copies sont manuscrites, tu es expert pour déchiffrer les écritures complexes. Pour la communication avec l'élève, adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
 
         try {
           const parts = [];
-          if (subjectMode==="upload" && upSubPdf) {
+          if (upSubPdf) {
             parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
           }
           parts.push({ inlineData: { mimeType: "application/pdf", data: mergedB64 } });
@@ -655,22 +593,22 @@ LISTE DES ÉLÈVES ATTENDUS :
 ${studentList}
 
 SUJET DE MATHÉMATIQUES :
-${subjectMode==="upload"?"[Voir PDF joint]":latexSrc}
+[Voir PDF joint]
 
 CORRIGÉ DE RÉFÉRENCE :
-${corrRef||"[Utilise tes connaissances]"}
+[Utilise tes connaissances]
 
 COPIES DES ÉLÈVES (Document joint contenant toutes les copies à la suite) :
 Identifie chaque copie, repère ses pages de début et de fin, et effectue la correction selon le protocole strict ci-dessous.
 
 ---
-PROTOCOLE DE CORRECTION EN 4 ÉTAPES OBLIGATOIRES
+PROTOCOLE DE CORRECTION EN 5 ÉTAPES OBLIGATOIRES
 ---
 ÉTAPE 1 : ÉTABLISSEMENT DE LA GRILLE (AVANT DE NOTER)
-Avant toute correction, construis mentalement une grille de notation complète détaillant toutes les sous-questions du sujet (ex: 1a, 1b, etc.) et attribue-leur une valeur en points fixe. Cette grille devient définitive et doit être appliquée STRICTEMENT à tous les élèves sans aucune modification ultérieure. Toute méthode différente du corrigé doit être acceptée si elle est mathématiquement valide.
+Avant toute correction, construis mentalement une grille de notation complète détaillant toutes les sous-questions du sujet (ex: 1a, 1b, etc.) et attribue-leur une valeur en points fixe. 
 
-ÉTAPE 2 : LECTURE INTÉGRALE
-Pour chaque élève, lis l'intégralité de sa copie avant d'attribuer le moindre point. Construis d'abord une vue complète des réponses et de la démarche de l'élève.
+ÉTAPE 2 : LECTURE INTÉGRALE ET DÉCRYPTAGE MANUSCRIT (CRITIQUE)
+Pour chaque élève, lis l'intégralité de sa copie. Les copies sont manuscrites. En cas de symbole ambigu (ex: rature, '+' ressemblant à un '-'), tu dois regarder la ligne de calcul suivante pour déduire logiquement l'intention de l'élève. Retranscris brièvement ton analyse de l'écriture dans le champ "analyse_decryptage_brouillon" avant de noter.
 
 ÉTAPE 3 : ÉVALUATION ET APPRÉCIATION
 Évalue chaque sous-question établie à l'étape 1 selon ce barème de niveaux :
@@ -692,23 +630,23 @@ Avant de générer le JSON :
 1. Recalcule une seconde fois la somme des points de chaque sous-question pour valider la note finale. Vérifie que la somme correspond exactement à la note annoncée.
 2. Vérifie qu'aucune erreur n'a été pénalisée deux fois (erreur propagée).
 3. Vérifie que tous les élèves présents dans la liste ont été traités.
-4. Si l'écriture est illisible, qu'une page est manquante ou que l'attribution des points reste ambiguë, positionne l'indicateur 'reviewNeeded' à true.
+4. Si l'écriture est illisible au point qu'aucune déduction n'est possible, positionne l'indicateur 'reviewNeeded' à true.
 
----
-RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE) :
-- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [, jamais (-\\infty, +\\infty)).
-- Tableaux de signes/variations : L'environnement web utilisé ne supporte PAS 'tkz-tab' ni 'tabular'. Utilise uniquement l'environnement '\\begin{array}...\\end{array}' basique ou décris les variations textuellement avec des flèches simples (ex: \\nearrow, \\searrow).
-- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots. Contente-toi de décrire l'allure de la courbe, ses extremums et ses asymptotes textuellement.
+ÉTAPE 5 : RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE)
+- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [).
+- Tableaux de signes/variations : Utilise uniquement l'environnement '\\begin{array}...\\end{array}' basique ou décris les variations textuellement avec des flèches simples (ex: \\nearrow, \\searrow).
+- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots.
 
 ---
 FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
 ---
-Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour, sans balise de bloc de code. Respecte exactement cette structure :
+Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exactement cette structure :
 [
   {
     "name": "Nom Prénom de l'élève",
     "pageStart": 1,
     "pageEnd": 2,
+    "analyse_decryptage_brouillon": "J'observe que l'élève a raturé la question 2, le symbole lu est un '-' confirmé par le résultat final...",
     "note": 14.25,
     "reviewNeeded": false,
     "appreciation": "[Prénom], ton travail montre...",
@@ -744,79 +682,6 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour, sans balise de bl
           setStatus("❌ Erreur : " + e.message);
           setBusy(false);
         }
-      };
-
-      const correctAll = async () => {
-        if(!apiKey)return;
-        setBusy(true);const results=[];setProgress(0);
-        let idx = 0;
-        
-        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
-
-        for(const s of students){
-          const ans=(answers[s.id]||"").trim();
-          if(!ans){results.push({...s,skipped:true}); idx++; continue;}
-          setStatus(`Correction de ${s.name} (${idx + 1}/${students.length})…`);
-          setProgress(Math.round((idx / students.length) * 100));
-          try{
-            const parts = [{ text: `Corrige cette copie individuelle selon le protocole strict ci-dessous.
-
-SUJET DE MATHÉMATIQUES :
-${latexSrc}
-
-CORRIGÉ DE RÉFÉRENCE :
-${corrRef||"[utilise tes connaissances]"}
-
-COPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):
-${answers[s.id]}
-
----
-PROTOCOLE DE CORRECTION
----
-1. Décompose la copie selon les sous-questions du sujet. Évalue chaque sous-question sur le barème strict : 100% (juste), 50% (erreur de calcul mineure sur méthode correcte), 25% (démarche incomplète ou trace de recherche pertinente), 0% (faux ou absent).
-2. Ne pénalise pas deux fois une erreur propagée.
-3. Rédige une appréciation cohérente avec la note (16-20: très positif, 12-15.99: positif, 8-11.99: mitigé, <8: encouragements). Tutoie l'élève.
-4. Effectue un contrôle de cohérence mathématique sur la somme des points avant de répondre.
-
----
-RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE) :
-- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [, jamais (-\\infty, +\\infty)).
-- Tableaux de signes/variations : L'environnement web utilisé ne supporte PAS 'tkz-tab' ni 'tabular'. Utilise uniquement l'environnement '\\begin{array}...\\end{array}' basique ou décris les variations textuellement avec des flèches simples (ex: \\nearrow, \\searrow).
-- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots. Contente-toi de décrire l'allure de la courbe, ses extremums et ses asymptotes textuellement.
-
----
-FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
----
-Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour, sans balise de bloc de code. Toutes les formules du champ 'latexCorrection' doivent utiliser le format LaTeX (avec \\\\[ ... \\\\] pour les formules isolées).
-
-Structure attendue :
-{
-  "note": 14.25,
-  "reviewNeeded": false,
-  "appreciation": "${s.name.split(" ")[0]}, ton travail montre...",
-  "details": [
-    {
-      "exercice": "Exercice 1 - Q1a",
-      "sur": 2.0,
-      "obtenu": 1.0,
-      "remarque": "Méthode correcte mais erreur de calcul."
-    }
-  ],
-  "conseil": "Prends le temps de te relire.",
-  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\nPour résoudre l'équation... \\\\[ f'(x) = 2x \\\\]"
-}` }];
-            const raw = await callGemini(apiKey, parts, systemInstruction, true);
-            results.push({...s,...safeJSONParse(raw)});
-          } catch(e) {
-            results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
-          }
-          idx++;
-        }
-        setProgress(100);
-        setCorrections(results);
-        setBusy(false);
-        setStatus("✅ Correction terminée");
-        setTimeout(() => setStatus(""), 4000);
       };
 
       const exportCsv = () => {
@@ -897,7 +762,6 @@ Structure attendue :
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           
-          // Corps de mail d'annonce uniquement, car le lourd (maths, notes) est dans le PDF
           const body = `Bonjour ${prenom},\n\nVoici ton résultat pour le devoir de mathématiques "${sessionName}".\n\nTu trouveras en pièce jointe ton bilan personnalisé contenant ta note globale (${c.note}/20), tes appréciations détaillées par exercice ainsi que le corrigé complet de l'épreuve.\n\nCordialement,\nF. Nocca`;
           const subject = `Résultats – ${sessionName}`;
           let pdfB64 = null, pdfFilename = null;
@@ -905,7 +769,6 @@ Structure attendue :
           try {
             setStatus(`Génération du document PDF pour ${prenom}…`);
             
-            // DOM invisible pour générer un rendu parfait des maths avant de "photographier"
             const hiddenDiv = document.createElement("div");
             hiddenDiv.style.position = "absolute";
             hiddenDiv.style.top = "-9999px";
@@ -955,10 +818,8 @@ Structure attendue :
             
             document.body.appendChild(hiddenDiv);
             
-            // Laisse un instant à KaTeX pour appliquer son formatage mathématique
             await new Promise(r => setTimeout(r, 150));
             
-            // OPTIMISATION CRITIQUE : scale=1.5 au lieu de 2 pour la taille
             const canvas = await window.html2canvas(hiddenDiv, {scale: 1.5, useCORS: true, backgroundColor: "#ffffff"});
             document.body.removeChild(hiddenDiv);
 
@@ -979,7 +840,6 @@ Structure attendue :
               sc.height = sliceH * ratio;
               sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
               if(srcY > 0) pdf.addPage();
-              // OPTIMISATION CRITIQUE : Compression JPEG qualité 80%. (poids / 10)
               pdf.addImage(sc.toDataURL("image/jpeg", 0.8), "JPEG", m, m, iw, sliceH, undefined, 'FAST');
               srcY += sliceH;
               remaining -= sliceH;
@@ -1058,76 +918,28 @@ Structure attendue :
           )}
 
           {step===0&&(<>
-            <div style={{ display:"flex",gap:8,marginBottom:16 }}>
-              {[["generate","✨ Générer avec l'IA"],["upload","📂 J'ai déjà un sujet (PDF)"]].map(([mode,lbl])=>(
-                <button key={mode} onClick={()=>setSubjectMode(mode)} style={{
-                  flex:1,padding:"10px 0",fontSize:13,fontWeight:500,
-                  background:subjectMode===mode?"#1d4ed8":"#f3f4f6",
-                  color:subjectMode===mode?"#fff":"#6b7280",
-                  border:subjectMode===mode?"none":"0.5px solid #e5e7eb",borderRadius:8,
-                }}>{lbl}</button>
-              ))}
-            </div>
-            {subjectMode==="generate"&&(<>
-              <Card>
-                <Field label="Vos consignes pour le sujet">
-                  <textarea value={consignes} onChange={e=>setConsignes(e.target.value)}
-                    placeholder="Ex : Devoir de Terminale sur les suites, 3 exercices progressifs…"
-                    style={{ minHeight:130,lineHeight:1.6 }}/>
-                </Field>
-                <button disabled={busy||!consignes.trim()||!apiKey} onClick={generateSubject} style={{ width:"100%",marginTop:8 }}>
-                  {busy?"Traitement en cours…":"✨ Générer le sujet"}
-                </button>
-              </Card>
-              {latexSrc&&(<>
-                <Card>
-                  <SectionHead title="Aperçu du sujet"/>
-                  <div ref={previewRef} style={{ background:"#fff",color:"#111",padding:"28px 32px",border:"0.5px solid #e5e7eb",borderRadius:6,lineHeight:1.8,fontSize:13 }}
-                    dangerouslySetInnerHTML={{ __html:latexToHtml(latexSrc) }}/>
-                </Card>
-                <Card>
-                  <SectionHead title="Source LaTeX — modifiable"/>
-                  <textarea value={latexSrc} onChange={e=>setLatexSrc(e.target.value)} style={{ minHeight:180,fontFamily:"monospace",fontSize:11.5 }}/>
-                </Card>
-              </>)}
-            </>)}
-            {subjectMode==="upload"&&(
-              <Card>
-                <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>Votre sujet en PDF</div>
-                <div onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();handleSubjectPdf(e.dataTransfer.files[0]);}}
-                  onClick={()=>document.getElementById("subj-pdf").click()}
-                  style={{ border:"1.5px dashed #d1d5db",borderRadius:8,padding:"2rem",textAlign:"center",cursor:"pointer",background:upSubPdf?"#f0fdf4":"#f9fafb" }}>
-                  <input id="subj-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={e=>handleSubjectPdf(e.target.files[0])}/>
-                  {upSubPdf?<span style={{ color:"#16a34a",fontWeight:500 }}>✓ {upSubPdfName}</span>:<span style={{ color:"#6b7280",fontSize:13 }}>Glissez le PDF ici ou cliquez</span>}
-                </div>
-              </Card>
-            )}
+            <Card>
+              <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Votre sujet (PDF)</div>
+              <p style={{ fontSize:13,color:"#6b7280",marginBottom:12 }}>Déposez ici le fichier PDF de votre sujet d'évaluation. L'IA l'utilisera comme référence pour la correction.</p>
+              <div onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();handleSubjectPdf(e.dataTransfer.files[0]);}}
+                onClick={()=>document.getElementById("subj-pdf").click()}
+                style={{ border:"1.5px dashed #d1d5db",borderRadius:8,padding:"2.5rem",textAlign:"center",cursor:"pointer",background:upSubPdf?"#f0fdf4":"#f9fafb" }}>
+                <input id="subj-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={e=>handleSubjectPdf(e.target.files[0])}/>
+                {upSubPdf?<span style={{ color:"#16a34a",fontWeight:500,fontSize:14 }}>✓ {upSubPdfName}</span>:<span style={{ color:"#6b7280",fontSize:13 }}>Glissez le PDF du sujet ici ou cliquez pour parcourir</span>}
+              </div>
+            </Card>
           </>)}
 
           {step===1&&(<>
-            <Card>
-              <p style={{ fontSize:13,color:"#6b7280",marginBottom:12 }}>Téléchargez le PDF du sujet pour le déposer dans Pronote.</p>
-              <button disabled={busy||!libsOk.h2c||!libsOk.jspdf} onClick={downloadSubjectPdf} style={{ width:"100%" }}>
-                {busy?"Génération du PDF…":"📥 Télécharger le sujet en PDF"}
-              </button>
-              {(!libsOk.h2c||!libsOk.jspdf)&&<p style={{ fontSize:11,color:"#9ca3af",marginTop:6,textAlign:"center" }}>Chargement des librairies…</p>}
-            </Card>
-            {subjectMode==="upload"&&upSubPdfName&&(
+            {upSubPdfName&&(
               <Card>
                 <div style={{ display:"flex",alignItems:"center",gap:10 }}>
-                  <span style={{ fontSize:20 }}>✓</span>
+                  <span style={{ fontSize:20, color:"#16a34a" }}>✓</span>
                   <div>
                     <div style={{ fontSize:14,fontWeight:500 }}>Sujet chargé : {upSubPdfName}</div>
-                    <div style={{ fontSize:12,color:"#6b7280" }}>Utilisé par l'IA à l'étape Correction.</div>
+                    <div style={{ fontSize:12,color:"#6b7280" }}>Ce document sera utilisé par l'IA à l'étape de correction.</div>
                   </div>
                 </div>
-              </Card>
-            )}
-            {subjectMode==="generate"&&latexSrc&&(
-              <Card>
-                <SectionHead title="Aperçu"/>
-                <div style={{ background:"#fff",color:"#111",padding:"24px 28px",border:"0.5px solid #e5e7eb",borderRadius:6,lineHeight:1.8,fontSize:13 }}
-                  dangerouslySetInnerHTML={{ __html:latexToHtml(latexSrc) }}/>
               </Card>
             )}
             <Card>
@@ -1175,27 +987,10 @@ Structure attendue :
                           onClick={()=>setCopiesPdfs(prev=>prev.filter((_,j)=>j!==i))}>✕</span>
                       </div>
                     ))}
-                    <button onClick={()=>document.getElementById("copies-pdf-add").click()}
-                      style={{ width:"100%",background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db",fontSize:12,marginTop:4 }}>
-                      ➕ Ajouter un PDF (copie en retard…)
-                    </button>
-                    <input id="copies-pdf-add" type="file" accept="application/pdf" multiple style={{ display:"none" }}
-                      onChange={e=>addCopiesPdf(e.target.files)}/>
                   </div>
                 )}
 
-                {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":"🤖 Corriger depuis les PDFs with Gemini ↗"}</button>}
-                <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou saisir manuellement —</div>
-                {students.map(s=>(
-                  <Card key={s.id}>
-                    <SectionHead title={s.name}/>
-                    <Field label="Réponses de l'élève">
-                      <textarea value={answers[s.id]||""} onChange={e=>setAnswers({...answers,[s.id]:e.target.value})}
-                        placeholder="Saisissez ou résumez les réponses…" style={{ minHeight:80,fontFamily:"monospace",fontSize:12 }}/>
-                    </Field>
-                  </Card>
-                ))}
-                {hasAnswers&&<button disabled={busy||!apiKey} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger toutes les copies ↗"}</button>}
+                {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":"🤖 Corriger les copies avec l'IA ↗"}</button>}
               </Card>
             )}
             
@@ -1231,7 +1026,6 @@ Structure attendue :
                         />
                       </Field>
                       
-                      {/* Ici on utilise latexToHtml pour afficher les détails proprement à l'écran */}
                       {c.details?.map((d,i)=>(
                         <div key={i} style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",fontSize:12,padding:"4px 0",borderTop:"0.5px solid #e5e7eb" }}>
                           <span style={{ color:"#6b7280", marginRight: 8, flexShrink: 0 }}>{d.exercice}</span>
@@ -1252,7 +1046,6 @@ Structure attendue :
                 );
               })}
 
-              {/* Corrigé général affiché une seule fois en bas */}
               {(() => {
                 const firstWithCorrection = corrections.find(x => !x.skipped && x.latexCorrection);
                 if (firstWithCorrection) {
@@ -1282,53 +1075,6 @@ Structure attendue :
 
               <div style={{ display:"flex",gap:8,marginTop:4 }}>
                 <button onClick={()=>setCorrections([])} style={{ flex:1,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db" }}>↩ Recommencer</button>
-                <button disabled={busy||!apiKey} onClick={()=>document.getElementById("late-pdf").click()}
-                  style={{ flex:1,background:"#f3f4f6",color:"#1d4ed8",border:"0.5px solid #bfdbfe",fontSize:12 }}>
-                  ➕ Copie en retard
-                </button>
-                <input id="late-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={async e=>{
-                  const f=e.target.files[0]; if(!f)return;
-                  setBusy(true); setStatus(`Correction de ${f.name}…`); setProgress(20);
-                  readPdf(f, async b64 => {
-                    setCopiesPdfs(prev=>[...prev,{name:f.name,b64}]);
-                    try {
-                      const parts = [];
-                      if (subjectMode==="upload" && upSubPdf) {
-                        parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
-                      }
-                      parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
-                      
-                      const sysInstructionLate = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
-                      
-                      parts.push({ text: `Corrige cette copie en retard (PDF joint).
-SUJET : ${subjectMode==="upload"?"(voir PDF joint)":"\n"+latexSrc}
-CORRIGÉ : ${corrRef||"[utilise tes connaissances]"}
-
-PROTOCOLE : Décompose par sous-question (100% juste, 50% erreur de calcul, 25% recherche, 0% faux). Ne pénalise pas deux fois l'erreur propagée. Rédige un corrigé complet en LaTeX.
-
-FORMAT STRICT JSON :
-[{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1 - Q1a","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
-                      
-                      setProgress(50);
-                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true);
-                      setProgress(90);
-                      const arr = safeJSONParse(raw);
-                      if(arr.length>0){
-                        const newC=arr[0];
-                        const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
-                        setCorrections(prev=>[...prev,{...(existingStudent||{id:Date.now(),name:newC.name,email:""}),...newC}]);
-                      }
-                      setProgress(100);
-                      setBusy(false);
-                      setStatus("✅ Copie ajoutée");
-                      setTimeout(() => setStatus(""), 3000);
-                    } catch(err){
-                      console.error(err);
-                      setStatus("❌ Erreur : " + err.message);
-                      setBusy(false);
-                    }
-                  });
-                }}/>
               </div>
             </>)}
           </>)}
@@ -1377,7 +1123,7 @@ FORMAT STRICT JSON :
               {["Diffuser →","Corriger les copies →","Voir les résultats →"][step]}
             </button>}
           </div>
-          <p style={{ textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem" }}>Propulsé par Google Gemini</p>
+          <p style={{ textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem" }}>Propulsé par Google Gemini Pro</p>
         </div>
       );
     }
