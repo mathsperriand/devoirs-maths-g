@@ -216,7 +216,7 @@
       return "s_" + Date.now();
     }
 
-    // Helper pour créer un délai asynchrone (pour éviter les 429)
+    // Helper pour créer un délai asynchrone
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
     /* ── API Google Gemini Hybride ── */
@@ -238,9 +238,9 @@
         body: JSON.stringify(body),
       });
 
-      // Interception stricte de l'erreur 429
+      // INTERCEPTION EXPLICITE DE L'ERREUR 429
       if (res.status === 429) {
-        throw new Error(`Limite de l'API gratuite atteinte (${model === "gemini-2.5-pro" ? "Le modèle Pro est limité à 2 requêtes/minute" : "Trop de requêtes"}). Patientez environ 60 secondes avant de réessayer.`);
+        throw new Error(`Limite de l'API Google atteinte (2 req/min ou 50/jour pour le modèle Pro). Patientez une minute et réessayez.`);
       }
 
       const data = await res.json();
@@ -632,7 +632,7 @@ Avant de générer le JSON :
 1. Recalcule une seconde fois la somme des points de chaque sous-question pour valider la note finale. Vérifie que la somme correspond exactement à la note annoncée.
 2. Vérifie qu'aucune erreur n'a été pénalisée deux fois (erreur propagée).
 3. Vérifie que tous les élèves présents dans la liste ont été traités.
-4. Si l'écriture est illisible au point qu'aucune déduction n'est possible, positionne l'indicator 'reviewNeeded' à true.
+4. Si l'écriture est illisible au point qu'aucune déduction n'est possible, positionne l'indicateur 'reviewNeeded' à true.
 
 ÉTAPE 5 : RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE)
 - Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [).
@@ -682,7 +682,8 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
         } catch(e) {
           clearInterval(interval); 
           setStatus("❌ Erreur : " + e.message);
-          setBusy(false);
+          setBusy(false); // Le busy devient false pour débloquer l'interface
+          setTimeout(() => setStatus(""), 12000); // L'erreur reste visible 12s avant de s'effacer
         }
       };
 
@@ -700,8 +701,8 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
           
           // REGULATION DE VITESSE : Pour éviter l'erreur 429 sur les corrections unitaires répétées
           if (i > 0) {
-             setStatus(`Pause de sécurité de 30s (Limitation de l'API Google gratuite)...`);
-             await delay(30000);
+             setStatus(`Attente de sécurité de 32s (Limitation de l'API Google gratuite)...`);
+             await delay(32000);
           }
 
           setStatus(`Correction de ${s.name} (${idx + 1}/${students.length})…`);
@@ -739,7 +740,9 @@ RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE) :
 ---
 FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
 ---
-Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour. Structure attendue :
+Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour, sans balise de bloc de code. Toutes les formules du champ 'latexCorrection' doivent utiliser le format LaTeX (avec \\\\[ ... \\\\] pour les formules isolées).
+
+Structure attendue :
 {
   "note": 14.25,
   "reviewNeeded": false,
@@ -760,8 +763,8 @@ Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour. Structure attendue 
           } catch(e) {
             results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
             setStatus("❌ Erreur : " + e.message);
-            // On s'arrête ici pour ne pas accumuler les erreurs 429
             setBusy(false);
+            setTimeout(() => setStatus(""), 12000);
             return;
           }
           idx++;
@@ -832,7 +835,9 @@ Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour. Structure attendue 
           await getGmailToken();
         } catch(e) {
           setStatus("❌ " + (e.message || e) + " — Réessayez.");
-          setBusy(false); return;
+          setBusy(false); 
+          setTimeout(() => setStatus(""), 8000);
+          return;
         }
         let errors = [];
         const activeStudents = corrections.filter(c => !c.skipped && c.email);
@@ -952,6 +957,7 @@ Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour. Structure attendue 
         setProgress(100);
         setMailsDone(true); setBusy(false);
         setStatus(errors.length ? `⚠️ Échec pour : ${errors.join(", ")}` : "");
+        if (errors.length) setTimeout(() => setStatus(""), 10000);
       };
 
       return (
@@ -994,15 +1000,18 @@ Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour. Structure attendue 
             })}
           </div>
 
-          {busy && (
-            <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, fontSize:13 }}>
-                <span style={{ fontWeight:500, color:"#1d4ed8" }}>{status}</span>
-                <span style={{ fontWeight:600, color:"#111827" }}>{progress}%</span>
+          {/* LA MODIFICATION CLÉ EST ICI : La boîte s'affiche dès qu'il y a un status, même si ça ne charge plus */}
+          {(busy || status) && (
+            <div style={{ background: status.includes("❌") || status.includes("⚠️") ? "#fee2e2" : "#fff", border: status.includes("❌") || status.includes("⚠️") ? "0.5px solid #fca5a5" : "0.5px solid #e5e7eb", borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: busy ? 8 : 0, fontSize:13 }}>
+                <span style={{ fontWeight:500, color: status.includes("❌") || status.includes("⚠️") ? "#dc2626" : "#1d4ed8" }}>{status}</span>
+                {busy && <span style={{ fontWeight:600, color:"#111827" }}>{progress}%</span>}
               </div>
-              <div style={{ width:"100%", background:"#f3f4f6", height:8, borderRadius:4, overflow:"hidden" }}>
-                <div style={{ width:`${progress}%`, background:"#1d4ed8", height:"100%", transition:"width 0.2s ease" }} />
-              </div>
+              {busy && (
+                <div style={{ width:"100%", background:"#f3f4f6", height:8, borderRadius:4, overflow:"hidden" }}>
+                  <div style={{ width:`${progress}%`, background:"#1d4ed8", height:"100%", transition:"width 0.2s ease" }} />
+                </div>
+              )}
             </div>
           )}
 
@@ -1220,6 +1229,7 @@ FORMAT STRICT JSON :
                       console.error(err);
                       setStatus("❌ Erreur : " + err.message);
                       setBusy(false);
+                      setTimeout(() => setStatus(""), 12000);
                     }
                   });
                 }}/>
@@ -1271,7 +1281,7 @@ FORMAT STRICT JSON :
               {["Diffuser →","Corriger les copies →","Voir les résultats →"][step]}
             </button>}
           </div>
-          <p style={{ textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem" }}>Propulsé par Google Gemini Hybride</p>
+          <p style={{ textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem" }}>Propulsé par Google Gemini Pro</p>
         </div>
       );
     }
