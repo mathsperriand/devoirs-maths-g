@@ -216,10 +216,10 @@
       return "s_" + Date.now();
     }
 
-    /* ── API Google Gemini ── */
-    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false) {
-      // UTILISATION DU MODÈLE PRO POUR UNE MEILLEURE LECTURE MANUSCRITE
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`;
+    /* ── API Google Gemini Hybride ── */
+    // Ajout du paramètre model pour choisir entre la vitesse (Flash) et l'intelligence (Pro)
+    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-pro") {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = {
         contents: [{ parts: parts }]
       };
@@ -511,7 +511,9 @@
       const validCorrs  = corrections.filter(c=>!c.skipped);
       const avg         = validCorrs.filter(c=>!isNaN(+c.note)).reduce((a,c,_,arr)=>a+ +c.note/arr.length,0);
       const copiesPdfName = copiesPdfs.map(p=>p.name).join(", ");
-      const canNext     = [!!upSubPdf, true, corrections.length>0, true][step];
+      
+      // Sécurité UX : On force l'utilisateur à avoir des élèves (extraits ou saisis) avant de passer à l'étape Correction
+      const canNext     = [!!upSubPdf, students.length > 0, corrections.length>0, true][step];
 
       const readPdf = (file, cb) => {
         const r = new FileReader(); r.onload = e => cb(e.target.result.split(",")[1]); r.readAsDataURL(file);
@@ -553,7 +555,8 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true);
+          // On utilise explicitement le modèle FLASH ici car il est parfait et très rapide pour l'extraction de données simples
+          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true, "gemini-2.5-flash");
           const arr = safeJSONParse(raw);
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -561,6 +564,7 @@
           }
         } catch(e) { 
           console.error("Erreur d'extraction :", e); 
+          alert("L'extraction automatique a échoué. Vous pouvez saisir les noms manuellement.");
         }
         setExtracting(false);
       };
@@ -572,7 +576,7 @@
         try { mergedB64 = await mergePdfs(copiesPdfs); }
         catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
         
-        setStatus("Lecture et correction par Gemini (cette opération peut être longue)…");setProgress(30);
+        setStatus("Lecture et correction par Gemini Pro (cette opération peut être longue)…");setProgress(30);
         const interval = setInterval(() => {
           setProgress(prev => Math.min(prev + 2, 95));
         }, 700);
@@ -663,6 +667,7 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
   }
 ]` });
           
+          // L'appel se fait bien avec le modèle par défaut (gemini-2.5-pro) pour l'intelligence de correction
           const raw = await callGemini(apiKey, parts, systemInstruction, true);
           clearInterval(interval); setProgress(100);
           
@@ -682,6 +687,83 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
           setStatus("❌ Erreur : " + e.message);
           setBusy(false);
         }
+      };
+
+      const correctAll = async () => {
+        if(!apiKey)return;
+        setBusy(true);const results=[];setProgress(0);
+        let idx = 0;
+        
+        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
+
+        for(const s of students){
+          const ans=(answers[s.id]||"").trim();
+          if(!ans){results.push({...s,skipped:true}); idx++; continue;}
+          setStatus(`Correction de ${s.name} (${idx + 1}/${students.length})…`);
+          setProgress(Math.round((idx / students.length) * 100));
+          try{
+            const parts = [];
+            if (upSubPdf) {
+              parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
+            }
+            parts.push({ text: `Corrige cette copie individuelle selon le protocole strict ci-dessous.
+
+SUJET DE MATHÉMATIQUES :
+[Voir PDF joint]
+
+CORRIGÉ DE RÉFÉRENCE :
+[Utilise tes connaissances]
+
+COPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):
+${answers[s.id]}
+
+---
+PROTOCOLE DE CORRECTION
+---
+1. Décompose la copie selon les sous-questions du sujet. Évalue chaque sous-question sur le barème strict : 100% (juste), 50% (erreur de calcul mineure sur méthode correcte), 25% (démarche incomplète ou trace de recherche pertinente), 0% (faux ou absent).
+2. Ne pénalise pas deux fois une erreur propagée.
+3. Rédige une appréciation cohérente avec la note (16-20: très positif, 12-15.99: positif, 8-11.99: mitigé, <8: encouragements). Tutoie l'élève.
+4. Effectue un contrôle de cohérence mathématique sur la somme des points avant de répondre.
+
+---
+RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE) :
+- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [, jamais (-\\infty, +\\infty)).
+- Tableaux de signes/variations : L'environnement web utilisé ne supporte PAS 'tkz-tab' ni 'tabular'. Utilise uniquement l'environnement '\\begin{array}...\\end{array}' basique ou décris les variations textuellement avec des flèches simples (ex: \\nearrow, \\searrow).
+- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots. Contente-toi de décrire l'allure de la courbe, ses extremums et ses asymptotes textuellement.
+
+---
+FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
+---
+Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour, sans balise de bloc de code. Toutes les formules du champ 'latexCorrection' doivent utiliser le format LaTeX (avec \\\\[ ... \\\\] pour les formules isolées).
+
+Structure attendue :
+{
+  "note": 14.25,
+  "reviewNeeded": false,
+  "appreciation": "${s.name.split(" ")[0]}, ton travail montre...",
+  "details": [
+    {
+      "exercice": "Exercice 1 - Q1a",
+      "sur": 2.0,
+      "obtenu": 1.0,
+      "remarque": "Méthode correcte mais erreur de calcul."
+    }
+  ],
+  "conseil": "Prends le temps de te relire.",
+  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\nPour résoudre l'équation... \\\\[ f'(x) = 2x \\\\]"
+}` });
+            const raw = await callGemini(apiKey, parts, systemInstruction, true);
+            results.push({...s,...safeJSONParse(raw)});
+          } catch(e) {
+            results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
+          }
+          idx++;
+        }
+        setProgress(100);
+        setCorrections(results);
+        setBusy(false);
+        setStatus("✅ Correction terminée");
+        setTimeout(() => setStatus(""), 4000);
       };
 
       const exportCsv = () => {
@@ -990,7 +1072,8 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
                   </div>
                 )}
 
-                {copiesPdfs.length>0&&<button disabled={busy||!apiKey} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":"🤖 Corriger les copies avec l'IA ↗"}</button>}
+                {/* Le bouton sera désactivé si students.length === 0, garantissant de ne pas lancer de process dans le vide */}
+                {copiesPdfs.length>0&&<button disabled={busy||!apiKey||students.length===0} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":"🤖 Corriger les copies avec l'IA ↗"}</button>}
               </Card>
             )}
             
@@ -1075,6 +1158,53 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
 
               <div style={{ display:"flex",gap:8,marginTop:4 }}>
                 <button onClick={()=>setCorrections([])} style={{ flex:1,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db" }}>↩ Recommencer</button>
+                <button disabled={busy||!apiKey} onClick={()=>document.getElementById("late-pdf").click()}
+                  style={{ flex:1,background:"#f3f4f6",color:"#1d4ed8",border:"0.5px solid #bfdbfe",fontSize:12 }}>
+                  ➕ Copie en retard
+                </button>
+                <input id="late-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={async e=>{
+                  const f=e.target.files[0]; if(!f)return;
+                  setBusy(true); setStatus(`Correction de ${f.name}…`); setProgress(20);
+                  readPdf(f, async b64 => {
+                    setCopiesPdfs(prev=>[...prev,{name:f.name,b64}]);
+                    try {
+                      const parts = [];
+                      if (upSubPdf) {
+                        parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
+                      }
+                      parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
+                      
+                      const sysInstructionLate = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
+                      
+                      parts.push({ text: `Corrige cette copie en retard (PDF joint).
+SUJET : [voir PDF joint]
+CORRIGÉ : [utilise tes connaissances]
+
+PROTOCOLE : Décompose par sous-question (100% juste, 50% erreur de calcul, 25% recherche, 0% faux). Ne pénalise pas deux fois l'erreur propagée. Rédige un corrigé complet en LaTeX.
+
+FORMAT STRICT JSON :
+[{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1 - Q1a","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
+                      
+                      setProgress(50);
+                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true);
+                      setProgress(90);
+                      const arr = safeJSONParse(raw);
+                      if(arr.length>0){
+                        const newC=arr[0];
+                        const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
+                        setCorrections(prev=>[...prev,{...(existingStudent||{id:Date.now(),name:newC.name,email:""}),...newC}]);
+                      }
+                      setProgress(100);
+                      setBusy(false);
+                      setStatus("✅ Copie ajoutée");
+                      setTimeout(() => setStatus(""), 3000);
+                    } catch(err){
+                      console.error(err);
+                      setStatus("❌ Erreur : " + err.message);
+                      setBusy(false);
+                    }
+                  });
+                }}/>
               </div>
             </>)}
           </>)}
