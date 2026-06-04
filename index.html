@@ -216,11 +216,10 @@
       return "s_" + Date.now();
     }
 
-    // Helper pour créer un délai asynchrone
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    /* ── API Google Gemini Hybride ── */
-    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-pro") {
+    /* ── API Google Gemini ── */
+    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash") {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
       
@@ -238,9 +237,8 @@
         body: JSON.stringify(body),
       });
 
-      // INTERCEPTION EXPLICITE DE L'ERREUR 429
       if (res.status === 429) {
-        throw new Error(`Limite de l'API Google atteinte (2 req/min ou 50/jour pour le modèle Pro). Patientez une minute et réessayez.`);
+        throw new Error(`Limite de l'API Google atteinte (Modèle ${model}). Si vous utilisez Pro, passez sur le modèle Flash pour corriger sans restriction.`);
       }
 
       const data = await res.json();
@@ -442,6 +440,7 @@
       };
 
       const [apiKey,  setApiKey]  = useState(() => { try{return localStorage.getItem("prof_maths_gemini_apikey")||"";}catch{return "";} });
+      const [modelChoice, setModelChoiceRaw] = useState(() => load("modelChoice", "gemini-2.5-flash"));
       const [step,    setStepRaw] = useState(() => load("step", 0));
       const setStep = v => { setStepRaw(v); persist("step",v); };
       const [busy,    setBusy]    = useState(false);
@@ -450,6 +449,8 @@
       const [libsOk,  setLibsOk]  = useState({ h2c: !!window.html2canvas, jspdf: !!window.jspdf });
 
       useEffect(()=>{ try{localStorage.setItem("prof_maths_gemini_apikey",apiKey);}catch{} },[apiKey]);
+      
+      const setModelChoice = v => { setModelChoiceRaw(v); persist("modelChoice", v); };
 
       /* Étape 0 */
       const [upSubPdf,     setUpSubPdf]        = useState(null);
@@ -569,15 +570,15 @@
 
       const correctFromPdf = async () => {
         if (!copiesPdfs.length||!apiKey) return;
-        setBusy(true);setStatus("Fusion des PDFs…");setProgress(10);
+        setBusy(true);setStatus(`Fusion et envoi des PDFs (${modelChoice})…`);setProgress(10);
         let mergedB64;
         try { mergedB64 = await mergePdfs(copiesPdfs); }
         catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
         
-        setStatus("Lecture et correction par Gemini Pro (cette opération peut être longue)…");setProgress(30);
+        setStatus(`Analyse globale par ${modelChoice === "gemini-2.5-flash" ? "Gemini Flash (Rapide)" : "Gemini Pro"}…`);setProgress(30);
         const interval = setInterval(() => {
-          setProgress(prev => Math.min(prev + 2, 95));
-        }, 700);
+          setProgress(prev => Math.min(prev + 3, 95));
+        }, 500);
         
         const studentList=students.map(s=>`- ${s.name}`).join("\n");
         
@@ -648,7 +649,7 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
     "name": "Nom Prénom de l'élève",
     "pageStart": 1,
     "pageEnd": 2,
-    "analyse_decryptage_brouillon": "J'observe que l'élève a raturé la question 2, le symbole lu est un '-' confirmé par le résultat final...",
+    "analyse_decryptage_brouillon": "...",
     "note": 14.25,
     "reviewNeeded": false,
     "appreciation": "[Prénom], ton travail montre...",
@@ -657,15 +658,15 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
         "exercice": "Exercice 1 - Q1a",
         "sur": 2.0,
         "obtenu": 1.0,
-        "remarque": "Méthode d'analyse correcte mais erreur de soustraction à la troisième ligne (50%)."
+        "remarque": "..."
       }
     ],
-    "conseil": "Prends le temps de te relire au brouillon.",
-    "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\nOn calcule d'abord la valeur... \\\\[ u_1 = 5 \\\\]"
+    "conseil": "...",
+    "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
   }
 ]` });
           
-          const raw = await callGemini(apiKey, parts, systemInstruction, true, "gemini-2.5-pro");
+          const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice);
           clearInterval(interval); setProgress(100);
           
           const arr = safeJSONParse(raw);
@@ -682,8 +683,8 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
         } catch(e) {
           clearInterval(interval); 
           setStatus("❌ Erreur : " + e.message);
-          setBusy(false); // Le busy devient false pour débloquer l'interface
-          setTimeout(() => setStatus(""), 12000); // L'erreur reste visible 12s avant de s'effacer
+          setBusy(false);
+          setTimeout(() => setStatus(""), 12000);
         }
       };
 
@@ -699,13 +700,13 @@ Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exacteme
           const ans=(answers[s.id]||"").trim();
           if(!ans){results.push({...s,skipped:true}); idx++; continue;}
           
-          // REGULATION DE VITESSE : Pour éviter l'erreur 429 sur les corrections unitaires répétées
           if (i > 0) {
-             setStatus(`Attente de sécurité de 32s (Limitation de l'API Google gratuite)...`);
-             await delay(32000);
+             const waitTime = modelChoice === "gemini-2.5-flash" ? 4000 : 32000;
+             setStatus(`Attente de sécurité de ${waitTime/1000}s (Limitation API ${modelChoice})…`);
+             await delay(waitTime);
           }
 
-          setStatus(`Correction de ${s.name} (${idx + 1}/${students.length})…`);
+          setStatus(`Correction de ${s.name} (${idx + 1}/${students.length}) via ${modelChoice}…`);
           setProgress(Math.round((idx / students.length) * 100));
           try{
             const parts = [];
@@ -728,21 +729,19 @@ PROTOCOLE DE CORRECTION
 ---
 1. Décompose la copie selon les sous-questions du sujet. Évalue chaque sous-question sur le barème strict : 100% (juste), 50% (erreur de calcul mineure sur méthode correcte), 25% (démarche incomplète ou trace de recherche pertinente), 0% (faux ou absent).
 2. Ne pénalise pas deux fois une erreur propagée.
-3. Rédige une appréciation cohérente avec la note (16-20: très positif, 12-15.99: positif, 8-11.99: mitigé, <8: encouragements). Tutoie l'élève.
+3. Rédige une appréciation cohérente avec la note. Tutoie l'élève.
 4. Effectue un contrôle de cohérence mathématique sur la somme des points avant de répondre.
 
 ---
-RÈGLES DE SAISIE LATEX (POUR COMPATIBILITÉ KATEX ET NOTATION FRANÇAISE) :
-- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [, jamais (-\\infty, +\\infty)).
-- Tableaux de signes/variations : L'environnement web utilisé ne supporte PAS 'tkz-tab' ni 'tabular'. Utilise uniquement l'environnement '\\begin{array}...\\end{array}' basique ou décris les variations textuellement avec des flèches simples (ex: \\nearrow, \\searrow).
-- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots. Contente-toi de décrire l'allure de la courbe, ses extremums et ses asymptotes textuellement.
+RÈGLES DE SAISIE LATEX :
+- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [).
+- Tableaux de signes/variations : Utilise uniquement l'environnement '\\begin{array}...\\end{array}' ou décris les variations textuellement.
+- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots.
 
 ---
 FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
 ---
-Retourne EXCLUSIVEMENT un objet JSON pur, sans texte autour, sans balise de bloc de code. Toutes les formules du champ 'latexCorrection' doivent utiliser le format LaTeX (avec \\\\[ ... \\\\] pour les formules isolées).
-
-Structure attendue :
+Retourne EXCLUSIVEMENT un objet JSON pur.
 {
   "note": 14.25,
   "reviewNeeded": false,
@@ -752,13 +751,13 @@ Structure attendue :
       "exercice": "Exercice 1 - Q1a",
       "sur": 2.0,
       "obtenu": 1.0,
-      "remarque": "Méthode correcte mais erreur de calcul."
+      "remarque": "..."
     }
   ],
-  "conseil": "Prends le temps de te relire.",
-  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\nPour résoudre l'équation... \\\\[ f'(x) = 2x \\\\]"
+  "conseil": "...",
+  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
 }` });
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, "gemini-2.5-pro");
+            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice);
             results.push({...s,...safeJSONParse(raw)});
           } catch(e) {
             results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
@@ -843,7 +842,6 @@ Structure attendue :
         const activeStudents = corrections.filter(c => !c.skipped && c.email);
         let idx = 0;
         
-        // On récupère le corrigé général de l'épreuve
         const firstWithCorrection = corrections.find(x => !x.skipped && x.latexCorrection);
         const generalLatexCorrection = firstWithCorrection ? firstWithCorrection.latexCorrection : "";
 
@@ -911,9 +909,7 @@ Structure attendue :
             `;
             
             document.body.appendChild(hiddenDiv);
-            
             await new Promise(r => setTimeout(r, 150));
-            
             const canvas = await window.html2canvas(hiddenDiv, {scale: 1.5, useCORS: true, backgroundColor: "#ffffff"});
             document.body.removeChild(hiddenDiv);
 
@@ -971,11 +967,19 @@ Structure attendue :
           </div>
 
           <Card>
-            <Field label="🔑 Clé API Google AI Studio (Gemini)">
-              <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="AIzaSy..." style={{ fontFamily:"monospace" }}/>
-            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="🔑 Clé API Google AI Studio">
+                <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="AIzaSy..." style={{ fontFamily:"monospace" }}/>
+              </Field>
+              <Field label="🤖 Modèle d'IA pour la correction">
+                <select value={modelChoice} onChange={e => setModelChoice(e.target.value)}>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommandé - Rapide, pas de limites)</option>
+                  <option value="gemini-2.5-pro">Gemini 2.5 Pro (Lent - Limité à 2 req/min)</option>
+                </select>
+              </Field>
+            </div>
             {!apiKey&&<p style={{ fontSize:12,color:"#dc2626",marginTop:6 }}>⚠️ Saisissez votre clé API Gemini pour activer l'outil.</p>}
-            {apiKey&&<p style={{ fontSize:12,color:"#16a34a",marginTop:6 }}>✓ Clé configurée avec succès.</p>}
+            {apiKey&&<p style={{ fontSize:12,color:"#16a34a",marginTop:6 }}>✓ Prêt avec {modelChoice === "gemini-2.5-flash" ? "Flash (aucune limite de lots)" : "Pro (limité à 50 copies/jour)"}.</p>}
           </Card>
 
           <div style={{ display:"flex", alignItems:"flex-start", marginBottom:"2rem" }}>
@@ -1000,7 +1004,6 @@ Structure attendue :
             })}
           </div>
 
-          {/* LA MODIFICATION CLÉ EST ICI : La boîte s'affiche dès qu'il y a un status, même si ça ne charge plus */}
           {(busy || status) && (
             <div style={{ background: status.includes("❌") || status.includes("⚠️") ? "#fee2e2" : "#fff", border: status.includes("❌") || status.includes("⚠️") ? "0.5px solid #fca5a5" : "0.5px solid #e5e7eb", borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: busy ? 8 : 0, fontSize:13 }}>
@@ -1088,9 +1091,9 @@ Structure attendue :
                   </div>
                 )}
 
-                {copiesPdfs.length>0&&<button disabled={busy||!apiKey||students.length===0} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":"🤖 Corriger les copies avec l'IA ↗"}</button>}
+                {copiesPdfs.length>0&&btoa && <button disabled={busy||!apiKey||students.length===0} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":`🤖 Corriger les copies par lot (${modelChoice === "gemini-2.5-flash" ? "Flash" : "Pro"}) ↗`}</button>}
                 
-                <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou saisir manuellement —</div>
+                <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou si saisie manuelle de texte —</div>
                 {students.map(s=>(
                   <Card key={s.id}>
                     <SectionHead title={s.name}/>
@@ -1100,7 +1103,7 @@ Structure attendue :
                     </Field>
                   </Card>
                 ))}
-                {hasAnswers&&<button disabled={busy||!apiKey||students.length===0} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger toutes les copies ↗"}</button>}
+                {hasAnswers&&<button disabled={busy||!apiKey||students.length===0} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger toutes les copies unitairement ↗"}</button>}
               </Card>
             )}
             
@@ -1191,7 +1194,7 @@ Structure attendue :
                 </button>
                 <input id="late-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={async e=>{
                   const f=e.target.files[0]; if(!f)return;
-                  setBusy(true); setStatus(`Correction de ${f.name}…`); setProgress(20);
+                  setBusy(true); setStatus(`Correction de ${f.name} via ${modelChoice}…`); setProgress(20);
                   readPdf(f, async b64 => {
                     setCopiesPdfs(prev=>[...prev,{name:f.name,b64}]);
                     try {
@@ -1213,7 +1216,7 @@ FORMAT STRICT JSON :
 [{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1 - Q1a","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
                       
                       setProgress(50);
-                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true, "gemini-2.5-pro");
+                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true, modelChoice);
                       setProgress(90);
                       const arr = safeJSONParse(raw);
                       if(arr.length>0){
@@ -1281,7 +1284,7 @@ FORMAT STRICT JSON :
               {["Diffuser →","Corriger les copies →","Voir les résultats →"][step]}
             </button>}
           </div>
-          <p style={{ textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem" }}>Propulsé par Google Gemini Pro</p>
+          <p style={{ textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem" }}>Propulsé par Google Gemini</p>
         </div>
       );
     }
