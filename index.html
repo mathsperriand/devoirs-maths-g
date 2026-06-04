@@ -55,7 +55,7 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "📄 PDF", "✏️ Correction", "📬 Résultats"];
 
-    /* ── Gmail OAuth ── */
+    /* ── Gmail OAuth & Utilities ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
     const GMAIL_API_KEY   = "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y";
     const GMAIL_SENDER    = "maths.perriand@gmail.com";
@@ -123,22 +123,31 @@
         .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
     }
 
-    // Mise à jour pour envoyer des emails au format HTML
-    function buildMime(to, subject, bodyHtml) {
+    // Indispensable pour éviter le rejet SMTP "Line too long"
+    function chunkBase64(str) {
+      if (!str) return "";
+      const chunks = [];
+      for (let i = 0; i < str.length; i += 76) {
+        chunks.push(str.substring(i, i + 76));
+      }
+      return chunks.join("\r\n");
+    }
+
+    function buildMime(to, subject, body) {
       const msg = [
         `From: ${GMAIL_SENDER}`,
         `To: ${to}`,
         `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
         "MIME-Version: 1.0",
-        "Content-Type: text/html; charset=utf-8",
+        "Content-Type: text/plain; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        btoa(unescape(encodeURIComponent(bodyHtml)))
+        chunkBase64(btoa(unescape(encodeURIComponent(body))))
       ].join("\r\n");
       return b64url(msg);
     }
 
-    function buildMimeWithPdf(to, subject, bodyHtml, pdfBase64, pdfFilename) {
+    function buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename) {
       const boundary = "boundary_" + Math.random().toString(36).slice(2);
       const parts = [
         `From: ${GMAIL_SENDER}`,
@@ -148,28 +157,28 @@
         `Content-Type: multipart/mixed; boundary="${boundary}"`,
         "",
         `--${boundary}`,
-        "Content-Type: text/html; charset=utf-8",
+        "Content-Type: text/plain; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        btoa(unescape(encodeURIComponent(bodyHtml))),
+        chunkBase64(btoa(unescape(encodeURIComponent(body)))),
         "",
         `--${boundary}`,
         `Content-Type: application/pdf; name="${pdfFilename}"`,
         "Content-Transfer-Encoding: base64",
         `Content-Disposition: attachment; filename="${pdfFilename}"`,
         "",
-        pdfBase64,
+        chunkBase64(pdfBase64),
         "",
         `--${boundary}--`
       ].join("\r\n");
       return b64url(parts);
     }
 
-    async function sendGmail(to, subject, bodyHtml, pdfBase64=null, pdfFilename=null) {
+    async function sendGmail(to, subject, body, pdfBase64=null, pdfFilename=null) {
       const token = await getGmailToken();
       const raw   = pdfBase64
-        ? buildMimeWithPdf(to, subject, bodyHtml, pdfBase64, pdfFilename)
-        : buildMime(to, subject, bodyHtml);
+        ? buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename)
+        : buildMime(to, subject, body);
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
         headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
@@ -246,7 +255,6 @@
       });
     }
 
-    // Sécurisation du parseur JSON
     function safeJSONParse(rawText) {
       try {
         let cleanRaw = rawText.trim();
@@ -270,7 +278,7 @@
           try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `<div>$$${m}$$</div>`; }
         })
-        .replace(/\$([^\$\n]+?)\ Ramos/g, '$1') // safe cleanup
+        .replace(/\$([^\$\n]+?)\ Ramos/g, '$1') 
         .replace(/\$([^\$\n]+?)\$/g, (_, m) => {
           try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
           catch { return `$${m}$`; }
@@ -592,7 +600,8 @@
         setBusy(true); setStatus("Génération du PDF…"); setProgress(15);
         try {
           const el=previewRef.current;
-          const canvas=await window.html2canvas(el,{scale:2,useCORS:true,backgroundColor:"#ffffff"});
+          // OPTIMISATION : scale=1.5 pour diviser le poids et préserver la qualité
+          const canvas=await window.html2canvas(el,{scale:1.5,useCORS:true,backgroundColor:"#ffffff"});
           setProgress(45);
           const {jsPDF}=window.jspdf;
           const pdf=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
@@ -604,7 +613,8 @@
             sc.width=canvas.width;sc.height=sliceH*ratio;
             sc.getContext("2d").drawImage(canvas,0,srcY*ratio,canvas.width,sliceH*ratio,0,0,canvas.width,sliceH*ratio);
             if(srcY>0)pdf.addPage();
-            pdf.addImage(sc.toDataURL("image/png"),"PNG",m,m,iw,sliceH);
+            // OPTIMISATION : Compression JPEG à 80% (divise le poids par 10 vs PNG)
+            pdf.addImage(sc.toDataURL("image/jpeg", 0.8),"JPEG",m,m,iw,sliceH, undefined, 'FAST');
             srcY+=sliceH;remaining-=sliceH;
             setProgress(Math.min(45 + Math.round((srcY / ((canvas.height*iw)/canvas.width)) * 50), 95));
           }
@@ -874,7 +884,7 @@ Structure attendue :
         const activeStudents = corrections.filter(c => !c.skipped && c.email);
         let idx = 0;
         
-        // On récupère le corrigé général de l'épreuve (le premier valide trouvé)
+        // On récupère le corrigé général de l'épreuve
         const firstWithCorrection = corrections.find(x => !x.skipped && x.latexCorrection);
         const generalLatexCorrection = firstWithCorrection ? firstWithCorrection.latexCorrection : "";
 
@@ -887,28 +897,15 @@ Structure attendue :
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           
-          // Corps de mail très épuré, tout est dans le PDF joint
-          const bodyHtml = `
-            <div style="font-family: system-ui, -apple-system, sans-serif; color: #111827; line-height: 1.6; max-width: 600px;">
-              <p>Bonjour ${prenom},</p>
-              <p>Voici ton résultat pour le devoir de mathématiques <strong>${sessionName}</strong>.</p>
-              <p>Tu trouveras en pièce jointe un document détaillé contenant :</p>
-              <ul style="padding-left: 20px;">
-                <li>Ta note globale</li>
-                <li>Ton appréciation personnalisée</li>
-                <li>Le détail de tes résultats exercice par exercice</li>
-                <li>Le corrigé complet de l'épreuve</li>
-              </ul>
-              <p style="color: #6b7280; font-size: 13px; margin-top: 25px;">Cordialement,<br/>F. Nocca</p>
-            </div>
-          `;
-          const subject=`Résultats – ${sessionName}`;
-          let pdfB64=null, pdfFilename=null;
+          // Corps de mail d'annonce uniquement, car le lourd (maths, notes) est dans le PDF
+          const body = `Bonjour ${prenom},\n\nVoici ton résultat pour le devoir de mathématiques "${sessionName}".\n\nTu trouveras en pièce jointe ton bilan personnalisé contenant ta note globale (${c.note}/20), tes appréciations détaillées par exercice ainsi que le corrigé complet de l'épreuve.\n\nCordialement,\nF. Nocca`;
+          const subject = `Résultats – ${sessionName}`;
+          let pdfB64 = null, pdfFilename = null;
 
           try {
             setStatus(`Génération du document PDF pour ${prenom}…`);
             
-            // On crée un DOM invisible complet pour le rendu KaTeX puis PDF
+            // DOM invisible pour générer un rendu parfait des maths avant de "photographier"
             const hiddenDiv = document.createElement("div");
             hiddenDiv.style.position = "absolute";
             hiddenDiv.style.top = "-9999px";
@@ -957,10 +954,12 @@ Structure attendue :
             `;
             
             document.body.appendChild(hiddenDiv);
-            // Court délai pour laisser le temps à KaTeX de rendre le DOM
+            
+            // Laisse un instant à KaTeX pour appliquer son formatage mathématique
             await new Promise(r => setTimeout(r, 150));
             
-            const canvas = await window.html2canvas(hiddenDiv, {scale: 2, useCORS: true, backgroundColor: "#ffffff"});
+            // OPTIMISATION CRITIQUE : scale=1.5 au lieu de 2 pour la taille
+            const canvas = await window.html2canvas(hiddenDiv, {scale: 1.5, useCORS: true, backgroundColor: "#ffffff"});
             document.body.removeChild(hiddenDiv);
 
             const {jsPDF} = window.jspdf;
@@ -980,7 +979,8 @@ Structure attendue :
               sc.height = sliceH * ratio;
               sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
               if(srcY > 0) pdf.addPage();
-              pdf.addImage(sc.toDataURL("image/png"), "PNG", m, m, iw, sliceH);
+              // OPTIMISATION CRITIQUE : Compression JPEG qualité 80%. (poids / 10)
+              pdf.addImage(sc.toDataURL("image/jpeg", 0.8), "JPEG", m, m, iw, sliceH, undefined, 'FAST');
               srcY += sliceH;
               remaining -= sliceH;
             }
@@ -992,7 +992,7 @@ Structure attendue :
           } catch(e) { console.error("Erreur PDF corrigé:", e); }
           
           try {
-            await sendGmail(c.email, subject, bodyHtml, pdfB64, pdfFilename);
+            await sendGmail(c.email, subject, body, pdfB64, pdfFilename);
           } catch(e) {
             errors.push(c.name);
             console.error("Erreur envoi " + c.name, e);
@@ -1231,6 +1231,7 @@ Structure attendue :
                         />
                       </Field>
                       
+                      {/* Ici on utilise latexToHtml pour afficher les détails proprement à l'écran */}
                       {c.details?.map((d,i)=>(
                         <div key={i} style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",fontSize:12,padding:"4px 0",borderTop:"0.5px solid #e5e7eb" }}>
                           <span style={{ color:"#6b7280", marginRight: 8, flexShrink: 0 }}>{d.exercice}</span>
