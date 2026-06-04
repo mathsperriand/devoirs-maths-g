@@ -45,6 +45,7 @@
       --color-border-tertiary: #e5e7eb;
       --border-radius-lg: 10px;
       --border-radius-md: 6px;
+      --font-mono: 'Courier New', monospace;
     }
   </style>
 </head>
@@ -269,8 +270,14 @@
 
     function latexToHtml(src) {
       if (!src) return "";
-      if (!window.katex) return `<pre>${src}</pre>`;
-      let html = src
+      
+      // Réparation robuste du tabular de LaTeX qui casse l'affichage web
+      // S'il trouve \begin{tabular}{...}, il le force en \begin{array}{...}
+      let html = src.replace(/\\begin\{tabular\}\{([^}]+)\}([\s\S]*?)\\end\{tabular\}/g, '\\begin{array}{$1}$2\\end{array}');
+
+      if (!window.katex) return `<pre>${html}</pre>`;
+      
+      html = html
         .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
           try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `<div>$$${m}$$</div>`; }
@@ -279,13 +286,14 @@
           try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `\\[${m}\\]`; }
         })
+        // Empêcher les coupures de ligne au milieu des formules (white-space: nowrap)
         .replace(/\$([^\$\n]+?)\$/g, (_, m) => {
-          try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
-          catch { return `$${m}$`; }
+          try { return `<span style="white-space: nowrap;">${window.katex.renderToString(m, { displayMode:false, throwOnError:false })}</span>`; }
+          catch { return `<span style="white-space: nowrap;">$${m}$</span>`; }
         })
         .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => {
-          try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
-          catch { return `\\(${m}\\)`; }
+          try { return `<span style="white-space: nowrap;">${window.katex.renderToString(m, { displayMode:false, throwOnError:false })}</span>`; }
+          catch { return `<span style="white-space: nowrap;">\\(${m}\\)</span>`; }
         });
 
       html = html
@@ -484,8 +492,6 @@
       };
 
       /* Étape 2 */
-      const [answers,     setAnswersRaw]     = useState(() => load("answers", {}));
-      const setAnswers = v => { setAnswersRaw(v); persist("answers",v); };
       const [corrections, setCorrectionsRaw] = useState(() => load("corrections", []));
       
       const setCorrections = v => {
@@ -515,7 +521,6 @@
       },[]);
 
       const students    = parseStudents(studentsRaw);
-      const hasAnswers  = Object.values(answers).some(a => a && a.trim());
       const validCorrs  = corrections.filter(c=>!c.skipped);
       const avg         = validCorrs.filter(c=>!isNaN(+c.note)).reduce((a,c,_,arr)=>a+ +c.note/arr.length,0);
       const copiesPdfName = copiesPdfs.map(p=>p.name).join(", ");
@@ -685,9 +690,14 @@ CORRIGÉ ATTENDU :
 Évalue chaque sous-question: 100% (juste), 50% (erreur de calcul), 25% (démarche), 0% (faux).
 Ne pénalise pas deux fois une erreur propagée.
 
+CONSIGNES STRICTES DE NOTATION :
+- ATTENTION : La note de chaque sous-question DOIT OBLIGATOIREMENT être un multiple de 0.25 (ex: 0.25, 0.5, 0.75, 1, 1.25, etc.).
+- Il est strictement INTERDIT d'utiliser des valeurs comme 0.33, 0.67, 0.4 ou 0.6. Arrondis toujours au quart de point.
+
 RÈGLES DE SAISIE LATEX (CRITIQUE POUR L'AFFICHAGE) :
 - TOUTES les variables, calculs et formules dans 'remarque', 'appreciation' et 'conseil' DOIVENT être entourées du symbole dollar ($). Exemple: l'erreur sur $f(x)=2$.
-- Dédouble IMPÉRATIVEMENT les antislashs pour que le JSON ne plante pas (ex: \\\\frac, \\\\section, \\\\[, \\\\]).
+- N'utilise JAMAIS l'environnement \\begin{tabular}. Utilise EXCLUSIVEMENT \\begin{array}{|c|c|...} ... \\end{array} pour TOUS les tableaux de variations ou probabilités.
+- Dédouble IMPÉRATIVEMENT les antislashs pour que le JSON ne plante pas (ex: \\\\frac, \\\\begin{array}, \\\\[, \\\\]).
 
 FORMAT DE RÉPONSE JSON STRICT :
 {
@@ -720,72 +730,6 @@ FORMAT DE RÉPONSE JSON STRICT :
         setCorrections(results);
         setBusy(false);
         setStatus("✅ Correction terminée avec succès.");
-        setTimeout(() => setStatus(""), 4000);
-      };
-
-      const correctAll = async () => {
-        if(!apiKey)return;
-        setBusy(true);const results=[];setProgress(0);
-        let idx = 0;
-        
-        const systemInstruction = `Tu es un correcteur de mathématiques impartial. Tutoie l'élève et utilise son prénom.`;
-
-        for(let i = 0; i < students.length; i++){
-          const s = students[i];
-          const ans=(answers[s.id]||"").trim();
-          if(!ans){results.push({...s,skipped:true}); idx++; continue;}
-          
-          if (i > 0) {
-             const waitTime = modelChoice === "gemini-2.5-flash" ? 4000 : 32000;
-             setStatus(`Attente API (${waitTime/1000}s)...`);
-             await delay(waitTime);
-          }
-
-          setStatus(`Correction de ${s.name} (${idx + 1}/${students.length}) via ${modelChoice}…`);
-          setProgress(Math.round((idx / students.length) * 100));
-          try{
-            const parts = [];
-            if (upSubPdf) {
-              parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
-            }
-            parts.push({ text: `Corrige cette copie individuelle de ${s.name} :
-${answers[s.id]}
-
-RÈGLES DE SAISIE LATEX (CRITIQUE POUR L'AFFICHAGE) :
-- TOUTES les formules dans 'remarque', 'appreciation' et 'conseil' DOIVENT être entourées de dollars ($).
-- Dédouble les antislashs pour que le JSON ne plante pas (ex: \\\\frac).
-
-FORMAT DE RÉPONSE JSON STRICT :
-{
-  "note": 14.25,
-  "reviewNeeded": false,
-  "appreciation": "${s.name.split(" ")[0]}, l'équation $f(x)=0$ est acquise.",
-  "details": [
-    {
-      "exercice": "Ex 1 - Q1a",
-      "sur": 2.0,
-      "obtenu": 1.0,
-      "remarque": "Erreur sur $(x-2)^2$."
-    }
-  ],
-  "conseil": "Relis tes formules.",
-  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
-}` });
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice);
-            results.push({...s,...safeJSONParse(raw)});
-          } catch(e) {
-            results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
-            setStatus("❌ Erreur : " + e.message);
-            setBusy(false);
-            setTimeout(() => setStatus(""), 12000);
-            return;
-          }
-          idx++;
-        }
-        setProgress(100);
-        setCorrections(results);
-        setBusy(false);
-        setStatus("✅ Correction terminée");
         setTimeout(() => setStatus(""), 4000);
       };
 
@@ -891,41 +835,54 @@ FORMAT DE RÉPONSE JSON STRICT :
 
             const latexHtml = generalLatexCorrection ? latexToHtml(generalLatexCorrection) : '<p style="font-style:italic">Aucun corrigé détaillé disponible.</p>';
             
+            // On divise le HTML en "chunks" pour le dessin sur PDF bloc par bloc
+            const latexChunks = latexHtml.split(/(?=<h[23])|(?<=<\/p>)/g).filter(s => s.trim());
+            const correctionsBlocks = latexChunks.map(chunk => `<div class="pdf-chunk">${chunk}</div>`).join("");
+
             hiddenDiv.innerHTML = `
-              <div style="border-bottom: 2px solid #e5e7eb; padding-bottom: 20px; margin-bottom: 20px;">
-                <h1 style="font-size:28px; margin:0 0 10px 0;">Bilan personnalisé et Corrigé</h1>
-                <h2 style="font-size:20px; margin:0 0 10px 0; color:#4b5563;">Élève : ${c.name}</h2>
-                <h2 style="font-size:24px; margin:0; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</h2>
+              <div class="pdf-chunk">
+                <div style="border-bottom: 2px solid #e5e7eb; padding-bottom: 20px; margin-bottom: 20px;">
+                  <h1 style="font-size:28px; margin:0 0 10px 0;">Bilan personnalisé et Corrigé</h1>
+                  <h2 style="font-size:20px; margin:0 0 10px 0; color:#4b5563;">Élève : ${c.name}</h2>
+                  <h2 style="font-size:24px; margin:0; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</h2>
+                </div>
               </div>
               
-              <div style="font-size:16px; line-height:1.6; margin-bottom: 20px;">
-                <strong>Appréciation :</strong> ${appreciation ? latexToHtml(appreciation).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '') : ''}
+              <div class="pdf-chunk">
+                <div style="font-size:16px; line-height:1.6; margin-bottom: 20px;">
+                  <strong>Appréciation :</strong> ${appreciation ? latexToHtml(appreciation).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '') : ''}
+                </div>
               </div>
               
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                <h3 style="margin-top:0; font-size:18px;">Détail par exercice</h3>
-                <div style="font-size:15px; line-height:1.6;">
-                  ${detailsHtml}
+              <div class="pdf-chunk">
+                <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                  <h3 style="margin-top:0; font-size:18px;">Détail par exercice</h3>
+                  <div style="font-size:15px; line-height:1.6;">
+                    ${detailsHtml}
+                  </div>
                 </div>
               </div>
               
               ${conseil ? `
-              <div style="font-size:16px; line-height:1.6; padding: 15px; background: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 4px; margin-bottom: 20px;">
-                <strong>Conseil :</strong> ${latexToHtml(conseil).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '')}
+              <div class="pdf-chunk">
+                <div style="font-size:16px; line-height:1.6; padding: 15px; background: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 4px; margin-bottom: 20px;">
+                  <strong>Conseil :</strong> ${latexToHtml(conseil).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '')}
+                </div>
               </div>` : ""}
               
-              <div style="border-top: 2px solid #e5e7eb; padding-top: 20px; margin-top: 20px;">
-                <h3 style="margin-top:0; font-size:18px;">Corrigé de l'épreuve</h3>
-                <div style="font-size:15px; line-height:1.8;">
-                  ${latexHtml}
+              <div class="pdf-chunk">
+                <div style="border-top: 2px solid #e5e7eb; padding-top: 20px; margin-top: 20px; margin-bottom: 10px;">
+                  <h3 style="margin-top:0; font-size:18px;">Corrigé de l'épreuve</h3>
                 </div>
+              </div>
+
+              <div style="font-size:15px; line-height:1.8;">
+                  ${correctionsBlocks}
               </div>
             `;
             
             document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 150));
-            const canvas = await window.html2canvas(hiddenDiv, {scale: 1.5, useCORS: true, backgroundColor: "#ffffff"});
-            document.body.removeChild(hiddenDiv);
+            await new Promise(r => setTimeout(r, 150)); // Laisse KaTeX afficher les maths
 
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
@@ -933,21 +890,48 @@ FORMAT DE RÉPONSE JSON STRICT :
             const H = pdf.internal.pageSize.getHeight();
             const m = 15;
             const iw = W - m*2;
-            let remaining = (canvas.height * iw) / canvas.width;
-            let srcY = 0;
-            
-            while(remaining > 0) {
-              const sliceH = Math.min(remaining, H - m*2);
-              const sc = document.createElement("canvas");
-              const ratio = canvas.width / iw;
-              sc.width = canvas.width;
-              sc.height = sliceH * ratio;
-              sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
-              if(srcY > 0) pdf.addPage();
-              pdf.addImage(sc.toDataURL("image/jpeg", 0.8), "JPEG", m, m, iw, sliceH, undefined, 'FAST');
-              srcY += sliceH;
-              remaining -= sliceH;
+            let currentY = m;
+
+            // Nouvelle mécanique anti-coupures horizontales
+            const chunks = hiddenDiv.querySelectorAll('.pdf-chunk');
+            for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                if (!chunk.innerText.trim() && !chunk.innerHTML.includes('img')) continue; 
+                
+                const canvas = await window.html2canvas(chunk, {scale: 1.5, useCORS: true, backgroundColor: "#ffffff"});
+                const ratio = canvas.width / iw;
+                let remainingH = canvas.height / ratio;
+                let srcY = 0;
+
+                // Saut de page automatique si le bloc entier ne rentre pas en bas de page
+                if (currentY + remainingH > H - m && currentY > m + 5 && remainingH < H - m*2) {
+                    pdf.addPage();
+                    currentY = m;
+                }
+
+                // Dessin du bloc
+                while (remainingH > 0) {
+                    const sliceH = Math.min(remainingH, H - currentY - m);
+                    const sc = document.createElement("canvas");
+                    sc.width = canvas.width;
+                    sc.height = sliceH * ratio;
+                    sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
+                    
+                    pdf.addImage(sc.toDataURL("image/jpeg", 0.8), "JPEG", m, currentY, iw, sliceH, undefined, 'FAST');
+                    
+                    currentY += sliceH;
+                    remainingH -= sliceH;
+                    srcY += sliceH;
+                    
+                    if (remainingH > 0) {
+                        pdf.addPage();
+                        currentY = m;
+                    }
+                }
+                currentY += 4; // Espace entre les paragraphes
             }
+
+            document.body.removeChild(hiddenDiv);
 
             const pdfArrayBuffer = pdf.output("arraybuffer");
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
@@ -1110,18 +1094,6 @@ FORMAT DE RÉPONSE JSON STRICT :
                 )}
 
                 {copiesPdfs.length>0&&<button disabled={busy||!apiKey||students.length===0} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":`🤖 Découper et corriger par lots avec l'IA ↗`}</button>}
-                
-                <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou si saisie manuelle de texte —</div>
-                {students.map(s=>(
-                  <Card key={s.id}>
-                    <SectionHead title={s.name}/>
-                    <Field label="Réponses de l'élève">
-                      <textarea value={answers[s.id]||""} onChange={e=>setAnswers({...answers,[s.id]:e.target.value})}
-                        placeholder="Saisissez ou résumez les réponses…" style={{ minHeight:80,fontFamily:"monospace",fontSize:12 }}/>
-                    </Field>
-                  </Card>
-                ))}
-                {hasAnswers&&<button disabled={busy||!apiKey||students.length===0} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger les textes unitairement ↗"}</button>}
               </Card>
             )}
             
@@ -1234,6 +1206,13 @@ SUJET : [voir PDF joint]
 CORRIGÉ : [utilise tes connaissances]
 
 PROTOCOLE : Décompose par sous-question (100% juste, 50% erreur de calcul, 25% recherche, 0% faux). Ne pénalise pas deux fois l'erreur propagée. Rédige un corrigé complet en LaTeX.
+
+CONSIGNES STRICTES DE NOTATION :
+- La note de chaque sous-question DOIT OBLIGATOIREMENT être un multiple de 0.25 (ex: 0.25, 0.5, 0.75, 1, 1.25, etc.).
+- Il est strictement INTERDIT d'utiliser des valeurs comme 0.33, 0.67.
+
+RÈGLES DE SAISIE LATEX :
+- N'utilise JAMAIS l'environnement \\begin{tabular}. Utilise EXCLUSIVEMENT \\begin{array}{|c|c|...} ... \\end{array} pour TOUS les tableaux.
 
 FORMAT STRICT JSON :
 [{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1 - Q1a","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
