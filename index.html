@@ -45,6 +45,7 @@
       --color-border-tertiary: #e5e7eb;
       --border-radius-lg: 10px;
       --border-radius-md: 6px;
+      --font-mono: 'Courier New', monospace;
     }
   </style>
 </head>
@@ -217,8 +218,8 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    /* ── API Google Gemini Hybride avec Auto-Retry (Exponential Backoff) ── */
-    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetry = null) {
+    /* ── API Google Gemini Hybride ── */
+    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash") {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
       
@@ -230,69 +231,19 @@
         body.systemInstruction = { parts: [{ text: systemInstruction }] };
       }
 
-      const maxRetries = 5;
-      let attempt = 0;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-      while (true) {
-        try {
-          const res = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-
-          // Intercepter les erreurs HTTP de surcharge (429 ou 503)
-          if (res.status === 429 || res.status === 503) {
-            attempt++;
-            if (attempt > maxRetries) {
-              throw new Error(`Limite ou surcharge de l'API Google atteinte (Code ${res.status}). Abandon après ${maxRetries} tentatives.`);
-            }
-            const waitMs = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
-            if (onRetry) onRetry(`Surcharge serveur (Code ${res.status}). Nouvelle tentative dans ${Math.round(waitMs/1000)}s... (Essai ${attempt}/${maxRetries})`);
-            await delay(waitMs);
-            continue;
-          }
-
-          const data = await res.json();
-          
-          // Intercepter l'erreur retournée dans le JSON (ex: "high demand")
-          if (data.error) {
-            const errMsg = data.error.message || "";
-            const isRetryable = errMsg.toLowerCase().includes("high demand") || 
-                                errMsg.toLowerCase().includes("quota") || 
-                                errMsg.toLowerCase().includes("limit") || 
-                                errMsg.toLowerCase().includes("overloaded") || 
-                                errMsg.toLowerCase().includes("temporary");
-            
-            if (isRetryable) {
-              attempt++;
-              if (attempt > maxRetries) {
-                throw new Error(errMsg);
-              }
-              const waitMs = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
-              if (onRetry) onRetry(`Surcharge IA : Forte demande détectée. Nouvelle tentative dans ${Math.round(waitMs/1000)}s... (Essai ${attempt}/${maxRetries})`);
-              await delay(waitMs);
-              continue;
-            } else {
-              throw new Error(errMsg); // Erreur définitive (Ex: clé API invalide)
-            }
-          }
-          return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        } catch (err) {
-          // Si c'est une erreur que nous venons de lever volontairement pour quitter, on la propage
-          if (err.message && (err.message.includes("API Google atteinte") || err.message.includes("Abandon après"))) {
-            throw err;
-          }
-          // Erreur réseau pure (coupure wifi, fetch échoué)
-          attempt++;
-          if (attempt > maxRetries) {
-            throw err;
-          }
-          const waitMs = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
-          if (onRetry) onRetry(`Problème réseau. Nouvelle tentative dans ${Math.round(waitMs/1000)}s... (Essai ${attempt}/${maxRetries})`);
-          await delay(waitMs);
-        }
+      if (res.status === 429) {
+        throw new Error(`Limite de l'API Google atteinte (Modèle ${model}). Patientez un instant.`);
       }
+
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
 
     function parseStudents(raw) {
@@ -313,31 +264,39 @@
         return JSON.parse(cleanRaw);
       } catch (error) {
         console.error("Erreur de parsing JSON :", error, rawText);
-        throw new Error("L'IA a renvoyé un format illisible (JSON coupé à cause de sa longueur ou mal formaté).");
+        throw new Error("L'IA a renvoyé un format illisible. Réessayez la correction.");
       }
     }
 
+    /* ── MOTEUR ROBUSTE DE TRADUCTION LATEX ── */
     function latexToHtml(src) {
       if (!src) return "";
       if (!window.katex) return `<pre>${src}</pre>`;
+
+      // Remplacement sécurisé des blocs de mathématiques
       let html = src
+        // Équations isolées: $$ ... $$
         .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
           try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `<div>$$${m}$$</div>`; }
         })
+        // Équations isolées: \[ ... \]
         .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => {
           try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `\\[${m}\\]`; }
         })
-        .replace(/\$([^\$\n]+?)\$/g, (_, m) => {
+        // Mathématiques en ligne: $ ... $
+        .replace(/\$([^$\n]+?)\$/g, (_, m) => {
           try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
           catch { return `$${m}$`; }
         })
-        .replace(/\\\(([\s\S]+?)\\Ref/g, (_, m) => {
+        // Mathématiques en ligne: \( ... \)
+        .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => {
           try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
           catch { return `\\(${m}\\)`; }
         });
 
+      // Formatage de mise en page spécifique à LaTeX
       html = html
         .replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, '<div style="text-align:center">$1</div>')
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
@@ -358,6 +317,7 @@
         .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')
         .replace(/\\[a-zA-Z]+/g, '')
         .replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
+      
       return '<p style="margin:6px 0">' + html + '</p>';
     }
 
@@ -627,152 +587,121 @@
 
       const correctFromPdf = async () => {
         if (!copiesPdfs.length||!apiKey) return;
-        setBusy(true);setStatus(`Fusion et préparation du PDF...`);setProgress(5);
-        
+        setBusy(true);setStatus(`Fusion et envoi des PDFs (${modelChoice})…`);setProgress(10);
         let mergedB64;
         try { mergedB64 = await mergePdfs(copiesPdfs); }
         catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
-
-        setStatus(`Étape 1/2 : Repérage des copies dans le PDF (${modelChoice})...`); setProgress(15);
-        const studentList = students.map(s => `- ${s.name}`).join("\n");
         
-        let mappingArr = [];
+        setStatus(`Analyse globale par ${modelChoice === "gemini-2.5-flash" ? "Gemini Flash (Rapide)" : "Gemini Pro"}…`);setProgress(30);
+        const interval = setInterval(() => {
+          setProgress(prev => Math.min(prev + 3, 95));
+        }, 500);
+        
+        const studentList=students.map(s=>`- ${s.name}`).join("\n");
+        
+        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant à toutes les copies. Les copies sont manuscrites, tu es expert pour déchiffrer les écritures complexes. Pour la communication avec l'élève, adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
+
         try {
-          const mappingPrompt = `Voici un document PDF contenant les copies de plusieurs élèves à la suite.
-LISTE DES ÉLÈVES :
+          const parts = [];
+          if (upSubPdf) {
+            parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
+          }
+          parts.push({ inlineData: { mimeType: "application/pdf", data: mergedB64 } });
+          parts.push({ text: `Voici les documents et les consignes pour la correction par lot.
+
+LISTE DES ÉLÈVES ATTENDUS :
 ${studentList}
 
-TÂCHE :
-Lis les noms sur les copies. Identifie à quelles pages correspond la copie de CHAQUE élève de la liste. Le document commence à la page 1.
-IMPORTANT : Assure-toi de mapper tous les élèves présents.
-Retourne EXCLUSIVEMENT un tableau JSON pur :
-[
-  { "name": "Nom complet de l'élève", "pageStart": 1, "pageEnd": 2 }
-]`;
-          const rawMapping = await callGemini(apiKey, [
-            { inlineData: { mimeType: "application/pdf", data: mergedB64 } },
-            { text: mappingPrompt }
-          ], "Tu es un expert en analyse de documents. Réponds uniquement en JSON pur.", true, modelChoice, (msg) => setStatus(msg));
-          
-          mappingArr = safeJSONParse(rawMapping);
-          if(!Array.isArray(mappingArr)) throw new Error("Format de cartographie invalide.");
-        } catch(e) {
-          setStatus("❌ Erreur lors du repérage des pages : " + e.message);
-          setBusy(false);
-          setTimeout(() => setStatus(""), 8000);
-          return;
-        }
-
-        const { PDFDocument } = window.PDFLib;
-        let srcDoc;
-        try {
-          const bytes = Uint8Array.from(atob(mergedB64), c => c.charCodeAt(0));
-          srcDoc = await PDFDocument.load(bytes);
-        } catch(e) {
-          setStatus("❌ Erreur de lecture interne du PDF : " + e.message); setBusy(false); return;
-        }
-        const totalPages = srcDoc.getPageCount();
-
-        const results = [];
-        let idx = 0;
-
-        for (let i = 0; i < students.length; i++) {
-          const s = students[i];
-          const mapData = mappingArr.find(m => m.name && m.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
-          
-          if (!mapData || !mapData.pageStart) {
-            results.push({...s, skipped: true, note: "?", appreciation: "Copie introuvable dans le fichier PDF par l'IA.", details: []});
-            idx++;
-            continue;
-          }
-
-          let subPdfB64;
-          try {
-            const newDoc = await PDFDocument.create();
-            const pStart = Math.max(0, mapData.pageStart - 1);
-            const pEnd = Math.min(totalPages - 1, (mapData.pageEnd || mapData.pageStart) - 1);
-            const indices = [];
-            for (let p = pStart; p <= pEnd; p++) indices.push(p);
-            
-            if (indices.length > 0) {
-              const copiedPages = await newDoc.copyPages(srcDoc, indices);
-              copiedPages.forEach(pg => newDoc.addPage(pg));
-              const subBytes = await newDoc.save();
-              subPdfB64 = uint8ToBase64(subBytes);
-            }
-          } catch(e) {
-            console.error("Erreur découpage de la copie:", e);
-          }
-
-          if (!subPdfB64) {
-             results.push({...s, skipped: true, note: "?", appreciation: "Erreur technique d'extraction de la copie.", details: []});
-             idx++; continue;
-          }
-
-          if (idx > 0) {
-             const waitTime = modelChoice === "gemini-2.5-flash" ? 4000 : 32000;
-             setStatus(`Attente API (${waitTime/1000}s) avant la copie de ${s.name}...`);
-             await delay(waitTime);
-          }
-
-          setStatus(`Étape 2/2 : Correction de ${s.name} (${idx + 1}/${students.length}) via ${modelChoice}…`);
-          setProgress(20 + Math.round((idx / students.length) * 80));
-
-          const systemInstruction = `Tu es un correcteur de mathématiques impartial et rigoureux. Adopte la posture d'un coach bienveillant : tutoie l'élève et utilise son prénom. Ton JSON ne doit JAMAIS dépasser la taille limite, sois concis dans tes explications LaTeX.`;
-
-          try {
-            const parts = [];
-            if (upSubPdf) {
-               parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
-            }
-            parts.push({ inlineData: { mimeType: "application/pdf", data: subPdfB64 } });
-            parts.push({ text: `Corrige EXCLUSIVEMENT la copie de ${s.name} ci-jointe.
-            
 SUJET DE MATHÉMATIQUES :
-[Voir 1er PDF joint, si présent]
+[Voir PDF joint]
 
-CORRIGÉ ATTENDU :
-Évalue chaque sous-question: 100% (juste), 50% (erreur de calcul), 25% (démarche), 0% (faux).
-Ne pénalise pas deux fois une erreur propagée.
+CORRIGÉ DE RÉFÉRENCE :
+[Utilise tes connaissances]
 
-RÈGLES DE SAISIE LATEX (CRITIQUE POUR L'AFFICHAGE) :
-- TOUTES les variables, calculs et formules dans 'remarque', 'appreciation' et 'conseil' DOIVENT être entourées du symbole dollar ($). Exemple: l'erreur sur $f(x)=2$.
-- Dédouble IMPÉRATIVEMENT les antislashs pour que le JSON ne plante pas (ex: \\\\frac, \\\\section, \\\\[, \\\\]).
+COPIES DES ÉLÈVES (Document joint contenant toutes les copies à la suite) :
+Identifie chaque copie, repère ses pages de début et de fin, et effectue la correction selon le protocole strict ci-dessous.
 
-FORMAT DE RÉPONSE JSON STRICT :
-{
-  "note": 14.25,
-  "reviewNeeded": false,
-  "analyse_decryptage_brouillon": "Écriture déchiffrée : le symbole lu à la ligne 2 est un +",
-  "appreciation": "${s.name.split(" ")[0]}, ton travail montre que l'équation $f(x)=0$ est comprise...",
-  "details": [
-    {
-      "exercice": "Ex 1 - Q1",
-      "sur": 2.0,
-      "obtenu": 1.0,
-      "remarque": "Bonne méthode mais erreur sur $(x-2)^2$."
-    }
-  ],
-  "conseil": "Apprends tes identités remarquables comme $(a+b)^2$.",
-  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
-}` });
+---
+PROTOCOLE DE CORRECTION EN 5 ÉTAPES OBLIGATOIRES
+---
+ÉTAPE 1 : ÉTABLISSEMENT DE LA GRILLE (AVANT DE NOTER)
+Avant toute correction, construis mentalement une grille de notation complète détaillant toutes les sous-questions du sujet (ex: 1a, 1b, etc.) et attribue-leur une valeur en points fixe. 
 
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => {
-              setStatus(`Étape 2/2 : Correction de ${s.name} (${idx + 1}/${students.length}) — ${msg}`);
-            });
-            const parsed = safeJSONParse(raw);
-            results.push({...s, ...parsed, pageStart: mapData.pageStart, pageEnd: mapData.pageEnd});
-          } catch(e) {
-            results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection:""});
-          }
-          idx++;
+ÉTAPE 2 : LECTURE INTÉGRALE ET DÉCRYPTAGE MANUSCRIT (CRITIQUE)
+Pour chaque élève, lis l'intégralité de sa copie. Les copies sont manuscrites. En cas de symbole ambigu (ex: rature, '+' ressemblant à un '-'), tu dois regarder la ligne de calcul suivante pour déduire logiquement l'intention de l'élève. Retranscris brièvement ton analyse de l'écriture dans le champ "analyse_decryptage_brouillon" avant de noter.
+
+ÉTAPE 3 : ÉVALUATION ET APPRÉCIATION
+Évalue chaque sous-question établie à l'étape 1 selon ce barème de niveaux :
+- Réponse exacte et démarche correcte : 100% des points.
+- Méthode correcte mais erreur de calcul / étourderie : 50% des points.
+- Réponse partiellement correcte ou démarche incomplète mais trace de recherche pertinente : 25% des points.
+- Raisonnement faux ou absence de réponse : 0%.
+
+* RÈGLE SUR L'ERREUR PROPAGÉE : Si une valeur erronée obtenue à une question précédente est réutilisée correctement, ne pénalise l'erreur qu'une seule fois. Note les questions suivantes sur la cohérence du raisonnement avec la valeur précédemment obtenue.
+
+* RÈGLE SUR L'APPRÉCIATION : L'appréciation doit être cohérente avec la note globale :
+- 16–20 : Ton très positif, félicitations.
+- 12–15.99 : Positif avec des pistes de progression claires.
+- 8–11.99 : Bilan mitigé, pointe les notions comprises et celles à revoir.
+- Moins de 8 : Encouragements forts et axes de travail prioritaires.
+
+ÉTAPE 4 : AUDIT FINAL ET CONTRÔLE DE COHÉRENCE
+Avant de générer le JSON :
+1. Recalcule une seconde fois la somme des points de chaque sous-question pour valider la note finale.
+2. Vérifie qu'aucune erreur n'a été pénalisée deux fois (erreur propagée).
+3. Si l'écriture est illisible au point qu'aucune déduction n'est possible, positionne l'indicateur 'reviewNeeded' à true.
+
+ÉTAPE 5 : RÈGLES DE SAISIE LATEX (OBLIGATOIRE POUR TOUS LES CHAMPS TEXTES)
+- Rendu Visuel : Toute variable (x, y, etc.), formule ou valeur mathématique dans les champs 'remarque', 'appreciation' et 'conseil' DOIT IMPÉRATIVEMENT être encadrée par des symboles dollars pour le rendu LaTeX (ex: $f(x) = 2x$).
+- Formules isolées : utilisez $$...$$.
+- Intervalles : Utilise exclusivement des crochets ouverts vers l'extérieur pour les infinis et intervalles ouverts (ex: ] -\\infty ; +\\infty [).
+
+---
+FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
+---
+Retourne EXCLUSIVEMENT un tableau JSON pur, sans texte autour. Respecte exactement cette structure :
+[
+  {
+    "name": "Nom Prénom de l'élève",
+    "pageStart": 1,
+    "pageEnd": 2,
+    "analyse_decryptage_brouillon": "...",
+    "note": 14.25,
+    "reviewNeeded": false,
+    "appreciation": "[Prénom], ton travail montre que l'évaluation de $f(2)$ est comprise...",
+    "details": [
+      {
+        "exercice": "Exercice 1 - Q1a",
+        "sur": 2.0,
+        "obtenu": 1.0,
+        "remarque": "Erreur dans l'identité remarquable $(x-2)^2$."
+      }
+    ],
+    "conseil": "Relis tes formules comme $u_n = u_0 + nr$.",
+    "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
+  }
+]` });
+          
+          const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice);
+          clearInterval(interval); setProgress(100);
+          
+          const arr = safeJSONParse(raw);
+          
+          setCorrections(students.map(s=>{
+            const f=arr.find(r=>r.name?.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
+            return f?{...s,...f}:{...s,skipped:true};
+          }));
+          
+          setBusy(false);
+          setStatus("✅ Correction terminée");
+          setTimeout(() => setStatus(""), 4000);
+          
+        } catch(e) {
+          clearInterval(interval); 
+          setStatus("❌ Erreur : " + e.message);
+          setBusy(false);
+          setTimeout(() => setStatus(""), 12000);
         }
-        
-        setProgress(100);
-        setCorrections(results);
-        setBusy(false);
-        setStatus("✅ Correction terminée avec succès.");
-        setTimeout(() => setStatus(""), 4000);
       };
 
       const correctAll = async () => {
@@ -780,7 +709,7 @@ FORMAT DE RÉPONSE JSON STRICT :
         setBusy(true);const results=[];setProgress(0);
         let idx = 0;
         
-        const systemInstruction = `Tu es un correcteur de mathématiques impartial. Tutoie l'élève et utilise son prénom.`;
+        const systemInstruction = `Tu es un correcteur de mathématiques d'une impartialité, d'une rigueur et d'une précision chirurgicale. Ton objectif est d'appliquer un barème strict et invariant. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
 
         for(let i = 0; i < students.length; i++){
           const s = students[i];
@@ -789,7 +718,7 @@ FORMAT DE RÉPONSE JSON STRICT :
           
           if (i > 0) {
              const waitTime = modelChoice === "gemini-2.5-flash" ? 4000 : 32000;
-             setStatus(`Attente API (${waitTime/1000}s)...`);
+             setStatus(`Attente de sécurité de ${waitTime/1000}s (Limitation API ${modelChoice})…`);
              await delay(waitTime);
           }
 
@@ -800,36 +729,58 @@ FORMAT DE RÉPONSE JSON STRICT :
             if (upSubPdf) {
               parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
             }
-            parts.push({ text: `Corrige cette copie individuelle de ${s.name} :
+            parts.push({ text: `Corrige cette copie individuelle selon le protocole strict ci-dessous.
+
+SUJET DE MATHÉMATIQUES :
+[Voir PDF joint]
+
+CORRIGÉ DE RÉFÉRENCE :
+[Utilise tes connaissances]
+
+COPIE DE ${s.name} (prénom: ${s.name.split(" ")[0]}):
 ${answers[s.id]}
 
-RÈGLES DE SAISIE LATEX (CRITIQUE POUR L'AFFICHAGE) :
-- TOUTES les formules dans 'remarque', 'appreciation' et 'conseil' DOIVENT être entourées de dollars ($).
-- Dédouble les antislashs pour que le JSON ne plante pas (ex: \\\\frac).
+---
+PROTOCOLE DE CORRECTION
+---
+1. Décompose la copie selon les sous-questions du sujet. Évalue chaque sous-question sur le barème strict : 100% (juste), 50% (erreur de calcul mineure sur méthode correcte), 25% (démarche incomplète ou trace de recherche pertinente), 0% (faux ou absent).
+2. Ne pénalise pas deux fois une erreur propagée.
+3. Rédige une appréciation cohérente avec la note. Tutoie l'élève.
+4. Effectue un contrôle de cohérence mathématique sur la somme des points avant de répondre.
 
-FORMAT DE RÉPONSE JSON STRICT :
+---
+RÈGLES DE SAISIE LATEX (OBLIGATOIRE POUR TOUS LES CHAMPS TEXTES) :
+- Toute variable (x, y, etc.), formule ou valeur mathématique dans les champs 'remarque', 'appreciation' et 'conseil' DOIT IMPÉRATIVEMENT être encadrée par des symboles dollars pour le rendu LaTeX (ex: $f(x) = 2x$).
+- Formules isolées : utilisez $$...$$.
+- Graphiques : Ne génère AUCUN code TikZ ou PGFPlots.
+
+---
+FORMAT DE RÉPONSE JSON ATTENDU (STRICT)
+---
+Retourne EXCLUSIVEMENT un objet JSON pur.
 {
   "note": 14.25,
   "reviewNeeded": false,
-  "appreciation": "${s.name.split(" ")[0]}, l'équation $f(x)=0$ est acquise.",
+  "appreciation": "${s.name.split(" ")[0]}, ton travail montre que $f(x)$ est maîtrisé...",
   "details": [
     {
-      "exercice": "Ex 1 - Q1a",
+      "exercice": "Exercice 1 - Q1a",
       "sur": 2.0,
       "obtenu": 1.0,
-      "remarque": "Erreur sur $(x-2)^2$."
+      "remarque": "Bonne méthode mais erreur sur $(x-2)^2$."
     }
   ],
-  "conseil": "Relis tes formules.",
+  "conseil": "Apprends tes identités remarquables comme $(a+b)^2$.",
   "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
 }` });
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => {
-              setStatus(`Correction de ${s.name} (${idx + 1}/${students.length}) — ${msg}`);
-            });
+            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice);
             results.push({...s,...safeJSONParse(raw)});
           } catch(e) {
             results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
-            // On continue vers l'élève suivant au lieu de tout planter brutalement
+            setStatus("❌ Erreur : " + e.message);
+            setBusy(false);
+            setTimeout(() => setStatus(""), 12000);
+            return;
           }
           idx++;
         }
@@ -936,6 +887,7 @@ FORMAT DE RÉPONSE JSON STRICT :
             hiddenDiv.style.color = "#111827";
             hiddenDiv.style.fontFamily = "system-ui, -apple-system, sans-serif";
             
+            // Les remarques, appréciations et conseils passent tous dans latexToHtml()
             const detailsHtml = (c.details||[]).map(d => 
               `<div style="margin-bottom: 12px;"><b>${d.exercice}</b> : ${d.obtenu}/${d.sur} — ${d.remarque ? latexToHtml(d.remarque).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '') : ''}</div>`
             ).join("");
@@ -974,7 +926,9 @@ FORMAT DE RÉPONSE JSON STRICT :
             `;
             
             document.body.appendChild(hiddenDiv);
+            
             await new Promise(r => setTimeout(r, 150));
+            
             const canvas = await window.html2canvas(hiddenDiv, {scale: 1.5, useCORS: true, backgroundColor: "#ffffff"});
             document.body.removeChild(hiddenDiv);
 
@@ -1131,10 +1085,6 @@ FORMAT DE RÉPONSE JSON STRICT :
             {corrections.length===0&&(
               <Card>
                 <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
-                
-                <div style={{ background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:12,color:"#166534" }}>
-                  💡 <strong>Info :</strong> Déposez ici votre grand PDF contenant les copies. L'outil s'occupe de repérer la copie de chaque élève et de découper le fichier automatiquement avant de l'envoyer à l'IA.
-                </div>
 
                 <div onDragOver={e=>e.preventDefault()}
                   onDrop={e=>{e.preventDefault();addCopiesPdf(e.dataTransfer.files);}}
@@ -1143,7 +1093,7 @@ FORMAT DE RÉPONSE JSON STRICT :
                   <input id="copies-pdf2" type="file" accept="application/pdf" multiple style={{ display:"none" }}
                     onChange={e=>addCopiesPdf(e.target.files)}/>
                   {copiesPdfs.length===0
-                    ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez votre grand fichier PDF scanné ici ou cliquez</span>
+                    ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez un ou plusieurs PDFs ici ou cliquez</span>
                     : <span style={{ color:"#16a34a",fontSize:13 }}>✓ {copiesPdfs.length} fichier{copiesPdfs.length>1?"s":""} chargé{copiesPdfs.length>1?"s":""}</span>
                   }
                 </div>
@@ -1160,7 +1110,7 @@ FORMAT DE RÉPONSE JSON STRICT :
                   </div>
                 )}
 
-                {copiesPdfs.length>0&&<button disabled={busy||!apiKey||students.length===0} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":`🤖 Découper et corriger par lots avec l'IA ↗`}</button>}
+                {copiesPdfs.length>0&&<button disabled={busy||!apiKey||students.length===0} onClick={correctFromPdf} style={{ width:"100%",marginBottom:8 }}>{busy?"Correction en cours…":`🤖 Corriger les copies par lot (${modelChoice === "gemini-2.5-flash" ? "Flash" : "Pro"}) ↗`}</button>}
                 
                 <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"10px 0 6px" }}>— ou si saisie manuelle de texte —</div>
                 {students.map(s=>(
@@ -1172,7 +1122,7 @@ FORMAT DE RÉPONSE JSON STRICT :
                     </Field>
                   </Card>
                 ))}
-                {hasAnswers&&<button disabled={busy||!apiKey||students.length===0} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger les textes unitairement ↗"}</button>}
+                {hasAnswers&&<button disabled={busy||!apiKey||students.length===0} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger toutes les copies unitairement ↗"}</button>}
               </Card>
             )}
             
@@ -1228,7 +1178,7 @@ FORMAT DE RÉPONSE JSON STRICT :
                              dangerouslySetInnerHTML={{ __html: latexToHtml(c.conseil || "Aperçu du rendu...") }} />
                       </Field>
 
-                    </div>):<p style={{ fontSize:13,color:"#9ca3af",fontStyle:"italic" }}>Copie non trouvée ou non traitée par l'IA.</p>}
+                    </div>):<p style={{ fontSize:13,color:"#9ca3af",fontStyle:"italic" }}>Copie non trouvée dans le PDF</p>}
                   </Card>
                 );
               })}
@@ -1290,7 +1240,7 @@ FORMAT STRICT JSON :
 [{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1 - Q1a","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
                       
                       setProgress(50);
-                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true, modelChoice, (msg) => setStatus(msg));
+                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true, modelChoice);
                       setProgress(90);
                       const arr = safeJSONParse(raw);
                       if(arr.length>0){
