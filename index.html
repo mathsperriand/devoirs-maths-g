@@ -217,8 +217,8 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    /* ── API Google Gemini Hybride ── */
-    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash") {
+    /* ── API Google Gemini Hybride avec Auto-Retry (Exponential Backoff) ── */
+    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetry = null) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
       
@@ -230,19 +230,69 @@
         body.systemInstruction = { parts: [{ text: systemInstruction }] };
       }
 
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const maxRetries = 5;
+      let attempt = 0;
 
-      if (res.status === 429) {
-        throw new Error(`Limite de l'API Google atteinte (Modèle ${model}). Patientez un instant ou changez de modèle.`);
+      while (true) {
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+
+          // Intercepter les erreurs HTTP de surcharge (429 ou 503)
+          if (res.status === 429 || res.status === 503) {
+            attempt++;
+            if (attempt > maxRetries) {
+              throw new Error(`Limite ou surcharge de l'API Google atteinte (Code ${res.status}). Abandon après ${maxRetries} tentatives.`);
+            }
+            const waitMs = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
+            if (onRetry) onRetry(`Surcharge serveur (Code ${res.status}). Nouvelle tentative dans ${Math.round(waitMs/1000)}s... (Essai ${attempt}/${maxRetries})`);
+            await delay(waitMs);
+            continue;
+          }
+
+          const data = await res.json();
+          
+          // Intercepter l'erreur retournée dans le JSON (ex: "high demand")
+          if (data.error) {
+            const errMsg = data.error.message || "";
+            const isRetryable = errMsg.toLowerCase().includes("high demand") || 
+                                errMsg.toLowerCase().includes("quota") || 
+                                errMsg.toLowerCase().includes("limit") || 
+                                errMsg.toLowerCase().includes("overloaded") || 
+                                errMsg.toLowerCase().includes("temporary");
+            
+            if (isRetryable) {
+              attempt++;
+              if (attempt > maxRetries) {
+                throw new Error(errMsg);
+              }
+              const waitMs = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
+              if (onRetry) onRetry(`Surcharge IA : Forte demande détectée. Nouvelle tentative dans ${Math.round(waitMs/1000)}s... (Essai ${attempt}/${maxRetries})`);
+              await delay(waitMs);
+              continue;
+            } else {
+              throw new Error(errMsg); // Erreur définitive (Ex: clé API invalide)
+            }
+          }
+          return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        } catch (err) {
+          // Si c'est une erreur que nous venons de lever volontairement pour quitter, on la propage
+          if (err.message && (err.message.includes("API Google atteinte") || err.message.includes("Abandon après"))) {
+            throw err;
+          }
+          // Erreur réseau pure (coupure wifi, fetch échoué)
+          attempt++;
+          if (attempt > maxRetries) {
+            throw err;
+          }
+          const waitMs = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
+          if (onRetry) onRetry(`Problème réseau. Nouvelle tentative dans ${Math.round(waitMs/1000)}s... (Essai ${attempt}/${maxRetries})`);
+          await delay(waitMs);
+        }
       }
-
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
 
     function parseStudents(raw) {
@@ -283,7 +333,7 @@
           try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
           catch { return `$${m}$`; }
         })
-        .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => {
+        .replace(/\\\(([\s\S]+?)\\Ref/g, (_, m) => {
           try { return window.katex.renderToString(m, { displayMode:false, throwOnError:false }); }
           catch { return `\\(${m}\\)`; }
         });
@@ -602,7 +652,7 @@ Retourne EXCLUSIVEMENT un tableau JSON pur :
           const rawMapping = await callGemini(apiKey, [
             { inlineData: { mimeType: "application/pdf", data: mergedB64 } },
             { text: mappingPrompt }
-          ], "Tu es un expert en analyse de documents. Réponds uniquement en JSON pur.", true, modelChoice);
+          ], "Tu es un expert en analyse de documents. Réponds uniquement en JSON pur.", true, modelChoice, (msg) => setStatus(msg));
           
           mappingArr = safeJSONParse(rawMapping);
           if(!Array.isArray(mappingArr)) throw new Error("Format de cartographie invalide.");
@@ -707,7 +757,9 @@ FORMAT DE RÉPONSE JSON STRICT :
   "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
 }` });
 
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice);
+            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => {
+              setStatus(`Étape 2/2 : Correction de ${s.name} (${idx + 1}/${students.length}) — ${msg}`);
+            });
             const parsed = safeJSONParse(raw);
             results.push({...s, ...parsed, pageStart: mapData.pageStart, pageEnd: mapData.pageEnd});
           } catch(e) {
@@ -771,14 +823,13 @@ FORMAT DE RÉPONSE JSON STRICT :
   "conseil": "Relis tes formules.",
   "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
 }` });
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice);
+            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => {
+              setStatus(`Correction de ${s.name} (${idx + 1}/${students.length}) — ${msg}`);
+            });
             results.push({...s,...safeJSONParse(raw)});
           } catch(e) {
             results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
-            setStatus("❌ Erreur : " + e.message);
-            setBusy(false);
-            setTimeout(() => setStatus(""), 12000);
-            return;
+            // On continue vers l'élève suivant au lieu de tout planter brutalement
           }
           idx++;
         }
@@ -1239,7 +1290,7 @@ FORMAT STRICT JSON :
 [{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1 - Q1a","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
                       
                       setProgress(50);
-                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true, modelChoice);
+                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true, modelChoice, (msg) => setStatus(msg));
                       setProgress(90);
                       const arr = safeJSONParse(raw);
                       if(arr.length>0){
