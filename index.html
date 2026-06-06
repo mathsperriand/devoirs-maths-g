@@ -588,7 +588,9 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur.", true, "gemini-1.5-flash", (msg) => setStatus(`[Extraction] ${msg}`));
+          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true, "gemini-2.5-flash", (msg) => {
+            setStatus(`[Extraction] ${msg}`);
+          });
           const arr = safeJSONParse(raw);
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -596,6 +598,7 @@
             setStatus("✅ Liste d'élèves extraite.");
           }
         } catch(e) { 
+          console.error("Erreur d'extraction :", e); 
           setStatus("⚠️ L'extraction automatique a échoué (Limite API ou lecture).");
         }
         setExtracting(false);
