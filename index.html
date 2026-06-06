@@ -217,7 +217,7 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    /* ── API Google Gemini avec gestion de file d'attente (Backoff) ── */
+    /* ── API Google Gemini ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetryNotify = null) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
@@ -232,7 +232,7 @@
 
       let attempt = 0;
       const maxAttempts = 5;
-      let backoffDelay = 5000;
+      let backoffDelay = 4000;
 
       while (attempt < maxAttempts) {
         try {
@@ -244,10 +244,8 @@
 
           if (res.status === 429) {
             attempt++;
-            if (attempt >= maxAttempts) {
-              throw new Error(`Limite de l'API Google persistante. Veuillez patienter.`);
-            }
-            if (onRetryNotify) onRetryNotify(`Quota saturé (429). Pause de ${backoffDelay / 1000}s...`);
+            if (attempt >= maxAttempts) throw new Error(`Limite de l'API Google persistante.`);
+            if (onRetryNotify) onRetryNotify(`Quota saturé (429). Pause de de sécurité de ${backoffDelay / 1000}s...`);
             await delay(backoffDelay);
             backoffDelay *= 1.5;
             continue;
@@ -567,15 +565,10 @@
         
         arr.forEach(file => {
           readPdf(file, b64 => {
-            if (loaded === 0) {
-              firstB64 = b64;
-            }
+            if (loaded === 0) firstB64 = b64;
             setCopiesPdfs(prev => [...prev, {name: file.name, b64}]);
             loaded++;
-            
-            if (loaded === arr.length && firstB64) {
-              extractNames(firstB64);
-            }
+            if (loaded === arr.length && firstB64) extractNames(firstB64);
           });
         });
       };
@@ -595,9 +588,7 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur.", true, modelChoice.includes("flash") ? modelChoice : "gemini-2.5-flash", (msg) => {
-            setStatus(`[Extraction] ${msg}`);
-          });
+          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur.", true, "gemini-1.5-flash", (msg) => setStatus(`[Extraction] ${msg}`));
           const arr = safeJSONParse(raw);
           if (Array.isArray(arr)) {
             const formatted = arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n");
@@ -610,88 +601,141 @@
         setExtracting(false);
       };
 
-      /* ── Correction globale directe sans pagination manuelle ── */
+      /* ── LA NOUVELLE ARCHITECTURE EN 3 PHASES ── */
       const executeCorrection = async () => {
         if (!copiesPdfs.length || !apiKey || !students.length) return;
         setBusy(true);
-        setStatus("Préparation du lot de copies...");
+        setStatus("Préparation du document global...");
         setProgress(5);
 
         let mergedB64;
         try { mergedB64 = await mergePdfs(copiesPdfs); }
         catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
 
+        /* PHASE 1 : Repérage global (1 seule requête) */
+        setStatus("Phase 1/3 : Analyse globale et cartographie des copies (0 token gâché)...");
+        let pageMapping = [];
+        try {
+          const studentList = students.map(s => `- ${s.name}`).join("\n");
+          const mappingPrompt = `Voici un document PDF contenant les copies de plusieurs élèves.
+LISTE DES ÉLÈVES DU GROUPE :
+${studentList}
+
+TÂCHE : Parcours le document. Identifie l'intervalle de pages (pageStart à pageEnd) pour chaque élève. La première page du PDF est la page 1.
+Retourne EXCLUSIVEMENT un tableau JSON pur :
+[ { "name": "Nom de l'élève", "pageStart": 1, "pageEnd": 2 } ]`;
+
+          const rawMapping = await callGemini(apiKey, [
+            { inlineData: { mimeType: "application/pdf", data: mergedB64 } },
+            { text: mappingPrompt }
+          ], "Tu es un expert en traitement de documents. Réponds uniquement en JSON pur.", true, modelChoice, (msg) => setStatus(`[Cartographie] ${msg}`));
+          
+          pageMapping = safeJSONParse(rawMapping);
+          if (!Array.isArray(pageMapping)) throw new Error("Format de cartographie invalide.");
+        } catch(e) {
+          setStatus("❌ Échec de la cartographie : " + e.message);
+          setBusy(false); return;
+        }
+
+        /* PHASE 2 & 3 : Découpage local silencieux + Correction ciblée */
+        setStatus("Phase 2/3 : Découpage virtuel local en cours...");
+        setProgress(20);
+        
+        const { PDFDocument } = window.PDFLib;
+        let srcDoc;
+        try {
+          const bytes = Uint8Array.from(atob(mergedB64), c => c.charCodeAt(0));
+          srcDoc = await PDFDocument.load(bytes);
+        } catch(e) {
+          setStatus("❌ Erreur interne PDF-Lib : " + e.message); setBusy(false); return;
+        }
+        
+        const totalPages = srcDoc.getPageCount();
         const results = [];
+        let generalCorrectionStored = null;
 
         for (let i = 0; i < students.length; i++) {
           const s = students[i];
+          const mapData = pageMapping.find(m => m.name && m.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
+          
+          if (!mapData || !mapData.pageStart) {
+            results.push({...s, skipped: true, note: "?", appreciation: "Copie introuvable dans le lot scanné.", details: []});
+            continue;
+          }
 
-          setStatus(`Recherche et correction de ${s.name} (${i + 1}/${students.length}) via ${modelChoice}…`);
-          setProgress(10 + Math.round((i / students.length) * 90));
+          // Découpage silencieux (Zéro Token)
+          let subPdfB64 = null;
+          try {
+            const newDoc = await PDFDocument.create();
+            const pStart = Math.max(0, mapData.pageStart - 1);
+            const pEnd = Math.min(totalPages - 1, (mapData.pageEnd || mapData.pageStart) - 1);
+            const indices = [];
+            for (let p = pStart; p <= pEnd; p++) indices.push(p);
+
+            if (indices.length > 0) {
+              const copiedPages = await newDoc.copyPages(srcDoc, indices);
+              copiedPages.forEach(pg => newDoc.addPage(pg));
+              const subBytes = await newDoc.save();
+              subPdfB64 = uint8ToBase64(subBytes);
+            }
+          } catch(e) {
+             console.error("Erreur découpage pour", s.name);
+          }
+
+          if (!subPdfB64) {
+             results.push({...s, skipped: true, note: "?", appreciation: "Erreur d'extraction de la copie.", details: []});
+             continue;
+          }
+
+          setStatus(`Phase 3/3 : Correction ciblée de ${s.name} (${i + 1}/${students.length}) via ${modelChoice}…`);
+          setProgress(20 + Math.round((i / students.length) * 80));
 
           if (i > 0) {
-            const spacingDelay = modelChoice.includes("pro") ? 30000 : 3000;
+            const spacingDelay = modelChoice.includes("pro") ? 30000 : 3500;
             let count = spacingDelay / 1000;
             while (count > 0) {
               setStatus(`Temporisation réseau (${count}s) avant la copie de ${s.name}...`);
-              await delay(1000);
-              count--;
+              await delay(1000); count--;
             }
           }
 
-          const systemInstruction = `Tu es un correcteur de mathématiques impartial et rigoureux. Adopte la posture d'un coach bienveillant : tutoie l'élève et utilise son prénom. Ton JSON ne doit JAMAIS dépasser la taille limite, sois concis dans tes explications LaTeX.`;
+          // Économie de tokens sortants : On ne génère le corrigé LaTeX complet QUE pour le 1er élève.
+          const needsLatexCorrection = (i === 0);
+          const systemInstruction = `Tu es un correcteur de mathématiques impartial. Tutoie l'élève et utilise son prénom. Ton JSON ne doit JAMAIS dépasser la taille limite.`;
+
+          const jsonFormatString = needsLatexCorrection 
+            ? `{\n  "note": 14.25,\n  "reviewNeeded": false,\n  "appreciation": "${s.name.split(" ")[0]}, ton travail montre que...",\n  "details": [\n    {\n      "exercice": "Ex 1",\n      "sur": 2.0,\n      "obtenu": 1.0,\n      "remarque": "Bonne méthode."\n    }\n  ],\n  "conseil": "Relis tes formules.",\n  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."\n}`
+            : `{\n  "note": 14.25,\n  "reviewNeeded": false,\n  "appreciation": "${s.name.split(" ")[0]}, ton travail montre que...",\n  "details": [\n    {\n      "exercice": "Ex 1",\n      "sur": 2.0,\n      "obtenu": 1.0,\n      "remarque": "..."\n    }\n  ],\n  "conseil": "..."\n}`;
 
           try {
             const parts = [];
-            if (upSubPdf) {
-               parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
-            }
-            parts.push({ inlineData: { mimeType: "application/pdf", data: mergedB64 } });
-            parts.push({ text: `Dans le document joint (qui contient les copies de la classe), LOCALISE UNIQUEMENT la copie de l'élève nommé EXACTEMENT "${s.name}".
-            
-TÂCHE : Corrige exclusivement SA copie en te basant sur le sujet fourni.
-Si tu ne trouves absolument pas sa copie dans ce document, attribue-lui une note de 0, passe reviewNeeded à true, et indique-le dans l'appréciation.
+            if (upSubPdf) parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
+            parts.push({ inlineData: { mimeType: "application/pdf", data: subPdfB64 } });
+            parts.push({ text: `Voici EXCLUSIVEMENT la copie de ${s.name} (extraite des pages ${mapData.pageStart} à ${mapData.pageEnd}).
+Corrige-la.
+RÈGLES LATEX : Entoure TOUTES les formules dans les remarques, appréciations et conseils par le symbole $. Dédouble les antislashs.
+FORMAT STRICT JSON ATTENDU :
+${jsonFormatString}` });
 
-CORRIGÉ ATTENDU :
-Évalue chaque sous-question. Ne pénalise pas deux fois une erreur propagée.
-
-RÈGLES DE SAISIE LATEX (CRITIQUE POUR LA BEAUTÉ DES MATHÉMATIQUES) :
-- Isole impérativement les formules importantes ou longues sur leur propre ligne en utilisant $$ ... $$ ou \\[ ... \\].
-- TOUTES les variables et petits calculs intégrés dans le texte ('remarque', 'appreciation', 'conseil') DOIVENT être entourés d'un simple dollar ($).
-- Dédouble IMPÉRATIVEMENT les antislashs pour que le JSON ne plante pas (ex: \\\\frac, \\\\section, \\\\[, \\\\]).
-
-FORMAT DE RÉPONSE JSON STRICT :
-{
-  "note": 14.25,
-  "reviewNeeded": false,
-  "analyse_decryptage_brouillon": "...",
-  "appreciation": "${s.name.split(" ")[0]}, ton travail montre que...",
-  "details": [
-    {
-      "exercice": "Ex 1 - Q1",
-      "sur": 2.0,
-      "obtenu": 1.0,
-      "remarque": "Bonne méthode."
-    }
-  ],
-  "conseil": "Relis tes formules.",
-  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\subsection*{Exercice 1}\\\\n..."
-}` });
-
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => {
-              setStatus(`[Copie de ${s.name}] ${msg}`);
-            });
+            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => setStatus(`[Correction ${s.name}] ${msg}`));
             const parsed = safeJSONParse(raw);
+            
+            if (needsLatexCorrection && parsed.latexCorrection) {
+              generalCorrectionStored = parsed.latexCorrection;
+            } else if (!needsLatexCorrection && generalCorrectionStored) {
+              parsed.latexCorrection = generalCorrectionStored;
+            }
+
             results.push({...s, ...parsed});
           } catch(e) {
-            results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection:""});
+            results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection: generalCorrectionStored || ""});
           }
         }
 
         setProgress(100);
         setCorrections(results);
         setBusy(false);
-        setStatus("✅ Évaluation par lots terminée !");
+        setStatus("✅ Évaluation chirurgicale terminée !");
         setTimeout(() => setStatus(""), 4000);
       };
 
@@ -708,9 +752,7 @@ FORMAT DE RÉPONSE JSON STRICT :
           ].join(",");
           const detCells = allDetails.map((_,i) => {
             const d = c.details?.[i];
-            return d
-              ? `"${d.obtenu}/${d.sur}","${(d.remarque||"").replace(/"/g,"'")}"`
-              : `"",""`; 
+            return d ? `"${d.obtenu}/${d.sur}","${(d.remarque||"").replace(/"/g,"'")}"` : `"",""`; 
           }).join(",");
           return base + "," + detCells;
         });
@@ -840,7 +882,6 @@ FORMAT DE RÉPONSE JSON STRICT :
             const tempCorr = document.createElement("div");
             tempCorr.innerHTML = generalLatexCorrection ? latexToHtml(generalLatexCorrection) : '<p style="font-style:italic">Aucun corrigé détaillé disponible.</p>';
             
-            // On divise le corrigé en multiples blocs pour éviter que les équations ne soient coupées entre 2 pages
             Array.from(tempCorr.childNodes).forEach(node => {
               if (node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) return;
               const block = document.createElement("div");
@@ -857,7 +898,7 @@ FORMAT DE RÉPONSE JSON STRICT :
             });
             
             document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 250)); // Laisse KaTeX et le navigateur peindre la page
+            await new Promise(r => setTimeout(r, 250));
 
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
@@ -873,17 +914,14 @@ FORMAT DE RÉPONSE JSON STRICT :
               const b = blocks[i];
               if (!b.innerText.trim() && !b.querySelector('.katex')) continue;
               
-              // scale: 2.5 pour une netteté chirurgicale (Magnifiques Mathématiques)
               const canvas = await window.html2canvas(b, {scale: 2.5, useCORS: true, backgroundColor: "#ffffff"}); 
               const imgH = (canvas.height * iw) / canvas.width;
               
-              // Saut de page intelligent si le bloc ne rentre pas
               if (currentY + imgH > H - m && currentY > m + 10) {
                 pdf.addPage();
                 currentY = m;
               }
               
-              // Sécurité anti-débordement pour un bloc immense (rare)
               if (imgH > H - 2*m) {
                 let remaining = imgH;
                 let srcY = 0;
@@ -1046,7 +1084,7 @@ FORMAT DE RÉPONSE JSON STRICT :
                 <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
                 
                 <div style={{ background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:13,color:"#166534" }}>
-                  💡 <strong>Processus simplifié :</strong> Déposez votre PDF contenant les copies des élèves. L'IA va analyser le document, trouver la copie correspondante pour chaque élève de votre liste, et la corriger automatiquement.
+                  💡 <strong>Processus ultra-optimisé :</strong> Déposez votre PDF contenant toutes les copies. Le système va repérer chaque élève (1 seule requête), découper silencieusement le PDF dans votre navigateur pour économiser vos quotas, puis corriger chaque copie isolément pour une précision chirurgicale.
                 </div>
 
                 <div onDragOver={e=>e.preventDefault()}
@@ -1056,7 +1094,7 @@ FORMAT DE RÉPONSE JSON STRICT :
                   <input id="copies-pdf2" type="file" accept="application/pdf" multiple style={{ display:"none" }}
                     onChange={e=>addCopiesPdf(e.target.files)}/>
                   {copiesPdfs.length===0
-                    ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez votre fichier PDF ici ou cliquez</span>
+                    ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez votre gros fichier PDF ici ou cliquez</span>
                     : <span style={{ color:"#16a34a",fontSize:13, fontWeight:500 }}>✓ {copiesPdfs.length} lot(s) de copies chargé(s)</span>
                   }
                 </div>
@@ -1166,41 +1204,6 @@ FORMAT DE RÉPONSE JSON STRICT :
 
               <div style={{ display:"flex",gap:8,marginTop:4 }}>
                 <button onClick={()=>{setCorrections([]);}} style={{ flex:1,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db" }}>↩ Recommencer</button>
-                <button disabled={busy||!apiKey} onClick={()=>document.getElementById("late-pdf").click()}
-                  style={{ flex:1,background:"#f3f4f6",color:"#1d4ed8",border:"0.5px solid #bfdbfe",fontSize:12 }}>
-                  ➕ Copie en retard
-                </button>
-                <input id="late-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={async e=>{
-                  const f=e.target.files[0]; if(!f)return;
-                  setBusy(true); setStatus(`Correction de la copie en retard : ${f.name}…`); setProgress(30);
-                  readPdf(f, async b64 => {
-                    setCopiesPdfs(prev=>[...prev,{name:f.name,b64}]);
-                    try {
-                      const parts = [];
-                      if (upSubPdf) {
-                        parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
-                      }
-                      parts.push({ inlineData: { mimeType: "application/pdf", data: b64 } });
-                      
-                      const sysInstructionLate = `Tu es un correcteur de mathématiques. Adopte la posture d'un coach bienveillant : tutoie toujours l'élève et utilise son prénom seul.`;
-                      
-                      parts.push({ text: `Corrige cette copie en retard (PDF joint).
-FORMAT STRICT JSON :
-[{"name":"Nom Prénom","analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
-                      
-                      const raw = await callGemini(apiKey, parts, sysInstructionLate, true, modelChoice, (msg) => { setStatus(`[Retard] ${msg}`); });
-                      const arr = safeJSONParse(raw);
-                      if(arr.length>0){
-                        const newC=arr[0];
-                        const existingStudent=students.find(s=>s.name.toLowerCase().includes(newC.name?.split(" ")[0]?.toLowerCase()));
-                        setCorrections(prev=>[...prev,{...(existingStudent||{id:Date.now(),name:newC.name,email:""}),...newC}]);
-                      }
-                      setProgress(100); setBusy(false); setStatus("✅ Copie ajoutée");
-                    } catch(err){
-                      setStatus("❌ Erreur copie en retard : " + err.message); setBusy(false);
-                    }
-                  });
-                }}/>
               </div>
             </>)}
           </>)}
