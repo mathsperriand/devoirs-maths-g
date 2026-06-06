@@ -232,7 +232,7 @@
 
       let attempt = 0;
       const maxAttempts = 5;
-      let backoffDelay = 5000; // Début à 5 secondes pour laisser respirer l'API
+      let backoffDelay = 5000;
 
       while (attempt < maxAttempts) {
         try {
@@ -242,17 +242,14 @@
             body: JSON.stringify(body),
           });
 
-          // Intercepter la limite de requêtes 429
           if (res.status === 429) {
             attempt++;
             if (attempt >= maxAttempts) {
-              throw new Error(`Limite de l'API Google (Erreur 429) persistante après ${maxAttempts} tentatives. Veuillez changer de modèle ou patienter.`);
+              throw new Error(`Limite de l'API Google persistante. Veuillez patienter.`);
             }
-            if (onRetryNotify) {
-              onRetryNotify(`Quota saturé (429). Pause de de sécurité de ${backoffDelay / 1000}s avant l'essai ${attempt}/${maxAttempts}...`);
-            }
+            if (onRetryNotify) onRetryNotify(`Quota saturé (429). Pause de ${backoffDelay / 1000}s...`);
             await delay(backoffDelay);
-            backoffDelay *= 1.5; // Augmentation progressive de l'attente
+            backoffDelay *= 1.5;
             continue;
           }
 
@@ -261,7 +258,7 @@
             if (data.error.code === 429 || data.error.message?.toLowerCase().includes("quota")) {
               attempt++;
               if (attempt >= maxAttempts) throw new Error(data.error.message);
-              if (onRetryNotify) onRetryNotify(`Quota de tokens atteint. Attente de ${backoffDelay / 1000}s...`);
+              if (onRetryNotify) onRetryNotify(`Quota atteint. Attente de ${backoffDelay / 1000}s...`);
               await delay(backoffDelay);
               backoffDelay *= 1.5;
               continue;
@@ -273,7 +270,7 @@
           if (error.message?.includes("429") || error.message?.toLowerCase().includes("quota") || error.message?.toLowerCase().includes("fetch")) {
             attempt++;
             if (attempt >= maxAttempts) throw error;
-            if (onRetryNotify) onRetryNotify(`Instabilité réseau ou limite API. Pause de ${backoffDelay / 1000}s...`);
+            if (onRetryNotify) onRetryNotify(`Instabilité réseau. Pause de ${backoffDelay / 1000}s...`);
             await delay(backoffDelay);
             backoffDelay *= 1.5;
             continue;
@@ -301,7 +298,7 @@
         return JSON.parse(cleanRaw);
       } catch (error) {
         console.error("Erreur de parsing JSON :", error, rawText);
-        throw new Error("L'IA a renvoyé un format illisible (JSON coupé à cause de sa longueur ou mal formaté).");
+        throw new Error("L'IA a renvoyé un format illisible.");
       }
     }
 
@@ -310,11 +307,11 @@
       if (!window.katex) return `<pre>${src}</pre>`;
       let html = src
         .replace(/\$$([\s\S]+?)\$\$/g, (_, m) => {
-          try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
+          try { return `<div style="margin:20px 0;text-align:center;font-size:1.15em;">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `<div>$$${m}$$</div>`; }
         })
         .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => {
-          try { return `<div style="margin:12px 0;text-align:center">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
+          try { return `<div style="margin:20px 0;text-align:center;font-size:1.15em;">${window.katex.renderToString(m, { displayMode:true, throwOnError:false })}</div>`; }
           catch { return `\\[${m}\\]`; }
         })
         .replace(/\$([^\$\n]+?)\$/g, (_, m) => {
@@ -332,12 +329,12 @@
         .replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>')
         .replace(/\\underline\{([^}]+)\}/g, '<u>$1</u>')
         .replace(/\{\\Large\\textbf\{([^}]+)\}\}/g, '<h1 style="font-size:16pt;text-align:center;margin:12px 0">$1</h1>')
-        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:13pt;margin-top:20px;margin-bottom:8px">$1</h2>')
-        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:12pt;margin-top:12px">$1</h3>')
+        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:14pt;margin-top:24px;margin-bottom:12px">$1</h2>')
+        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:12pt;margin-top:16px;margin-bottom:8px">$1</h3>')
         .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) =>
-          `<ol style="padding-left:24px;margin:8px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
+          `<ol style="padding-left:24px;margin:12px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
         .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) =>
-          `<ul style="padding-left:24px;margin:8px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
+          `<ul style="padding-left:24px;margin:12px 0">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
         .replace(/\\hfill/g, '<span style="float:right">')
         .replace(/\\\\(\[[\d.]+pt\])?/g, '<br/>')
         .replace(/\\vspace\{[^}]+\}/g, '<div style="height:10px"></div>')
@@ -345,8 +342,8 @@
         .replace(/\\hline/g, '')
         .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')
         .replace(/\\[a-zA-Z]+/g, '')
-        .replace(/\n{2,}/g, '</p><p style="margin:6px 0">');
-      return '<p style="margin:6px 0">' + html + '</p>';
+        .replace(/\n{2,}/g, '</p><p style="margin:10px 0">');
+      return '<p style="margin:10px 0">' + html + '</p>';
     }
 
     function Card({ children }) {
@@ -521,13 +518,7 @@
         }
       };
 
-      /* Écurie Intermédiaire de Pagination Manuel / IA */
-      const [pageMappings, setPageMappingsRaw] = useState(() => load("pageMappings", []));
-      const setPageMappings = v => { setPageMappingsRaw(v); persist("pageMappings", v); };
-
       /* Étape 2 */
-      const [answers,     setAnswersRaw]     = useState(() => load("answers", {}));
-      const setAnswers = v => { setAnswersRaw(v); persist("answers",v); };
       const [corrections, setCorrectionsRaw] = useState(() => load("corrections", []));
       
       const setCorrections = v => {
@@ -557,7 +548,6 @@
       },[]);
 
       const students    = parseStudents(studentsRaw);
-      const hasAnswers  = Object.values(answers).some(a => a && a.trim());
       const validCorrs  = corrections.filter(c=>!c.skipped);
       const avg         = validCorrs.filter(c=>!isNaN(+c.note)).reduce((a,c,_,arr)=>a+ +c.note/arr.length,0);
       const copiesPdfName = copiesPdfs.map(p=>p.name).join(", ");
@@ -605,7 +595,7 @@
             { inlineData: { mimeType: "application/pdf", data: b64 } },
             { text: "Extrais le nom complet et l'email de chaque élève présent dans ces copies.\nRetourne uniquement un tableau JSON contenant des objets avec les clés 'name' et 'email'. Si aucun email n'est visible, laisse la chaîne vide \"\"." }
           ];
-          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur, sans formatage Markdown.", true, "gemini-2.5-flash", (msg) => {
+          const raw = await callGemini(apiKey, parts, "Tu extrais exclusivement des listes d'élèves. Réponds en JSON pur.", true, modelChoice.includes("flash") ? modelChoice : "gemini-2.5-flash", (msg) => {
             setStatus(`[Extraction] ${msg}`);
           });
           const arr = safeJSONParse(raw);
@@ -615,129 +605,39 @@
             setStatus("✅ Liste d'élèves extraite.");
           }
         } catch(e) { 
-          console.error("Erreur d'extraction :", e); 
           setStatus("⚠️ L'extraction automatique a échoué (Limite API ou lecture).");
         }
         setExtracting(false);
       };
 
-      /* Étape 2A : Cartographier automatiquement la structure du fichier PDF */
-      const mapPagesFromPdf = async () => {
-        if (!copiesPdfs.length || !apiKey) return;
+      /* ── Correction globale directe sans pagination manuelle ── */
+      const executeCorrection = async () => {
+        if (!copiesPdfs.length || !apiKey || !students.length) return;
         setBusy(true);
-        setStatus("Analyse globale des copies pour localiser chaque élève...");
-        setProgress(20);
-
-        let mergedB64;
-        try { mergedB64 = await mergePdfs(copiesPdfs); }
-        catch(e) { setStatus("❌ Erreur de compilation PDF : "+e.message); setBusy(false); return; }
-
-        const studentList = students.map(s => `- ${s.name}`).join("\n");
-        const mappingPrompt = `Voici un document PDF contenant les copies de plusieurs élèves à la suite.
-LISTE DES ÉLÈVES DU GROUPE :
-${studentList}
-
-TÂCHE :
-Parcours le document (la première page commence à 1). Identifie précisément l'intervalle de pages (pageStart à pageEnd) de la copie de chaque élève de la liste.
-Retourne EXCLUSIVEMENT un tableau JSON pur :
-[
-  { "name": "Nom complet de l'élève", "pageStart": 1, "pageEnd": 2 }
-]`;
-
-        try {
-          const rawMapping = await callGemini(apiKey, [
-            { inlineData: { mimeType: "application/pdf", data: mergedB64 } },
-            { text: mappingPrompt }
-          ], "Tu es un expert en traitement de documents. Réponds uniquement en JSON pur.", true, modelChoice, (msg) => {
-            setStatus(`[Pagination] ${msg}`);
-          });
-
-          const mappingArr = safeJSONParse(rawMapping);
-          if (!Array.isArray(mappingArr)) throw new Error("Format de réponse invalide.");
-
-          const finalMappings = students.map(s => {
-            const found = mappingArr.find(m => m.name && m.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
-            return {
-              id: s.id,
-              name: s.name,
-              pageStart: found ? parseInt(found.pageStart) || 1 : 1,
-              pageEnd: found ? parseInt(found.pageEnd) || 1 : 1
-            };
-          });
-
-          setPageMappings(finalMappings);
-          setStatus("✓ Pagination cartographiée. Ajustez les données ou lancez la correction.");
-          setProgress(100);
-        } catch(e) {
-          setStatus("❌ Échec de la cartographie : " + e.message);
-        }
-        setBusy(false);
-      };
-
-      /* Étape 2B : Lancer la correction globale à partir des pages validées */
-      const executeCorrectionFromMapping = async () => {
-        if (!copiesPdfs.length || !apiKey || !pageMappings.length) return;
-        setBusy(true);
-        setStatus("Initialisation de la file d'attente de correction...");
+        setStatus("Préparation du lot de copies...");
         setProgress(5);
 
         let mergedB64;
         try { mergedB64 = await mergePdfs(copiesPdfs); }
         catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
 
-        const { PDFDocument } = window.PDFLib;
-        let srcDoc;
-        try {
-          const bytes = Uint8Array.from(atob(mergedB64), c => c.charCodeAt(0));
-          srcDoc = await PDFDocument.load(bytes);
-        } catch(e) {
-          setStatus("❌ Erreur interne PDF-Lib : " + e.message); setBusy(false); return;
-        }
-        const totalPages = srcDoc.getPageCount();
         const results = [];
 
-        for (let i = 0; i < pageMappings.length; i++) {
-          const mapData = pageMappings[i];
-          const studentMeta = students.find(s => s.id === mapData.id) || { name: mapData.name, email: "" };
+        for (let i = 0; i < students.length; i++) {
+          const s = students[i];
 
-          setStatus(`Extraction de la copie de ${mapData.name}...`);
-          setProgress(10 + Math.round((i / pageMappings.length) * 90));
+          setStatus(`Recherche et correction de ${s.name} (${i + 1}/${students.length}) via ${modelChoice}…`);
+          setProgress(10 + Math.round((i / students.length) * 90));
 
-          let subPdfB64 = null;
-          try {
-            const newDoc = await PDFDocument.create();
-            const pStart = Math.max(0, mapData.pageStart - 1);
-            const pEnd = Math.min(totalPages - 1, mapData.pageEnd - 1);
-            const indices = [];
-            for (let p = pStart; p <= pEnd; p++) indices.push(p);
-
-            if (indices.length > 0) {
-              const copiedPages = await newDoc.copyPages(srcDoc, indices);
-              copiedPages.forEach(pg => newDoc.addPage(pg));
-              const subBytes = await newDoc.save();
-              subPdfB64 = uint8ToBase64(subBytes);
-            }
-          } catch(e) {
-            console.error("Erreur découpage page pour l'élève", mapData.name, e);
-          }
-
-          if (!subPdfB64) {
-            results.push({...studentMeta, skipped: true, note: "?", appreciation: "Erreur lors de l'extraction des pages.", details: []});
-            continue;
-          }
-
-          // Anti-burst : Temporisation entre chaque élève
           if (i > 0) {
-            const spacingDelay = modelChoice === "gemini-2.5-flash" ? 3000 : 30000;
+            const spacingDelay = modelChoice.includes("pro") ? 30000 : 3000;
             let count = spacingDelay / 1000;
             while (count > 0) {
-              setStatus(`Temporisation réseau (${count}s) avant la copie de ${mapData.name}...`);
+              setStatus(`Temporisation réseau (${count}s) avant la copie de ${s.name}...`);
               await delay(1000);
               count--;
             }
           }
-
-          setStatus(`Correction de ${mapData.name} (${i + 1}/${pageMappings.length}) via ${modelChoice}…`);
 
           const systemInstruction = `Tu es un correcteur de mathématiques impartial et rigoureux. Adopte la posture d'un coach bienveillant : tutoie l'élève et utilise son prénom. Ton JSON ne doit JAMAIS dépasser la taille limite, sois concis dans tes explications LaTeX.`;
 
@@ -746,18 +646,18 @@ Retourne EXCLUSIVEMENT un tableau JSON pur :
             if (upSubPdf) {
                parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
             }
-            parts.push({ inlineData: { mimeType: "application/pdf", data: subPdfB64 } });
-            parts.push({ text: `Corrige EXCLUSIVEMENT la copie de ${mapData.name} ci-jointe.
+            parts.push({ inlineData: { mimeType: "application/pdf", data: mergedB64 } });
+            parts.push({ text: `Dans le document joint (qui contient les copies de la classe), LOCALISE UNIQUEMENT la copie de l'élève nommé EXACTEMENT "${s.name}".
             
-SUJET DE MATHÉMATIQUES :
-[Voir 1er PDF joint, si présent]
+TÂCHE : Corrige exclusivement SA copie en te basant sur le sujet fourni.
+Si tu ne trouves absolument pas sa copie dans ce document, attribue-lui une note de 0, passe reviewNeeded à true, et indique-le dans l'appréciation.
 
 CORRIGÉ ATTENDU :
-Évalue chaque sous-question: 100% (juste), 50% (erreur de calcul), 25% (démarche), 0% (faux).
-Ne pénalise pas deux fois une erreur propagée.
+Évalue chaque sous-question. Ne pénalise pas deux fois une erreur propagée.
 
-RÈGLES DE SAISIE LATEX (CRITIQUE POUR L'AFFICHAGE) :
-- TOUTES les variables, calculs et formules dans 'remarque', 'appreciation' et 'conseil' DOIVENT être entourées du symbole dollar ($). Exemple: l'erreur sur $f(x)=2$.
+RÈGLES DE SAISIE LATEX (CRITIQUE POUR LA BEAUTÉ DES MATHÉMATIQUES) :
+- Isole impérativement les formules importantes ou longues sur leur propre ligne en utilisant $$ ... $$ ou \\[ ... \\].
+- TOUTES les variables et petits calculs intégrés dans le texte ('remarque', 'appreciation', 'conseil') DOIVENT être entourés d'un simple dollar ($).
 - Dédouble IMPÉRATIVEMENT les antislashs pour que le JSON ne plante pas (ex: \\\\frac, \\\\section, \\\\[, \\\\]).
 
 FORMAT DE RÉPONSE JSON STRICT :
@@ -765,7 +665,7 @@ FORMAT DE RÉPONSE JSON STRICT :
   "note": 14.25,
   "reviewNeeded": false,
   "analyse_decryptage_brouillon": "...",
-  "appreciation": "${mapData.name.split(" ")[0]}, ton travail montre que...",
+  "appreciation": "${s.name.split(" ")[0]}, ton travail montre que...",
   "details": [
     {
       "exercice": "Ex 1 - Q1",
@@ -775,16 +675,16 @@ FORMAT DE RÉPONSE JSON STRICT :
     }
   ],
   "conseil": "Relis tes formules.",
-  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
+  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n\\\\subsection*{Exercice 1}\\\\n..."
 }` });
 
             const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => {
-              setStatus(`[Copie de ${mapData.name}] ${msg}`);
+              setStatus(`[Copie de ${s.name}] ${msg}`);
             });
             const parsed = safeJSONParse(raw);
-            results.push({...studentMeta, ...parsed, pageStart: mapData.pageStart, pageEnd: mapData.pageEnd});
+            results.push({...s, ...parsed});
           } catch(e) {
-            results.push({...studentMeta, note:"?", appreciation:"Erreur IA critique : "+e.message, details:[], conseil:"", latexCorrection:""});
+            results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection:""});
           }
         }
 
@@ -793,71 +693,6 @@ FORMAT DE RÉPONSE JSON STRICT :
         setBusy(false);
         setStatus("✅ Évaluation par lots terminée !");
         setTimeout(() => setStatus(""), 4000);
-      };
-
-      const handleMappingChange = (id, field, value) => {
-        setPageMappings(prev => prev.map(m => m.id === id ? { ...m, [field]: parseInt(value) || 1 } : m));
-      };
-
-      const correctAll = async () => {
-        if(!apiKey)return;
-        setBusy(true);const results=[];setProgress(0);
-        let idx = 0;
-        
-        const systemInstruction = `Tu es un correcteur de mathématiques impartial. Tutoie l'élève et utilise son prénom.`;
-
-        for(let i = 0; i < students.length; i++){
-          const s = students[i];
-          const ans=(answers[s.id]||"").trim();
-          if(!ans){results.push({...s,skipped:true}); idx++; continue;}
-          
-          if (i > 0) {
-             const waitTime = modelChoice === "gemini-2.5-flash" ? 3000 : 30000;
-             setStatus(`Attente API (${waitTime/1000}s)...`);
-             await delay(waitTime);
-          }
-
-          setStatus(`Correction de ${s.name} (${idx + 1}/${students.length}) via ${modelChoice}…`);
-          setProgress(Math.round((idx / students.length) * 100));
-          try{
-            const parts = [];
-            if (upSubPdf) {
-              parts.push({ inlineData: { mimeType: "application/pdf", data: upSubPdf } });
-            }
-            parts.push({ text: `Corrige cette copie individuelle de ${s.name} :
-${answers[s.id]}
-
-RÈGLES DE SAISIE LATEX (CRITIQUE POUR L'AFFICHAGE) :
-- TOUTES les formules dans 'remarque', 'appreciation' et 'conseil' DOIVENT être entourées de dollars ($).
-- Dédouble les antislashs pour que le JSON ne plante pas (ex: \\\\frac).
-
-FORMAT DE RÉPONSE JSON STRICT :
-{
-  "note": 14.25,
-  "reviewNeeded": false,
-  "appreciation": "${s.name.split(" ")[0]}, l'équation $f(x)=0$ est acquise.",
-  "details": [
-    {
-      "exercice": "Ex 1 - Q1a",
-      "sur": 2.0,
-      "obtenu": 1.0,
-      "remarque": "Erreur."
-    }
-  ],
-  "conseil": "Relis tes formules.",
-  "latexCorrection": "\\\\section*{Corrigé détaillé}\\\\n..."
-}` });
-            const raw = await callGemini(apiKey, parts, systemInstruction, true, modelChoice, (msg) => { setStatus(`[Copie] ${msg}`); });
-            results.push({...s,...safeJSONParse(raw)});
-          } catch(e) {
-            results.push({...s,note:"?",appreciation:"Erreur : "+e.message,details:[],conseil:"",latexCorrection:""});
-          }
-          idx++;
-        }
-        setProgress(100);
-        setCorrections(results);
-        setBusy(false);
-        setStatus("✅ Correction terminée");
       };
 
       const exportCsv = () => {
@@ -912,6 +747,7 @@ FORMAT DE RÉPONSE JSON STRICT :
         pdf.save(`corrections_${sessionName.replace(/[^a-z0-9]/gi,"_")}.pdf`);
       };
 
+      /* ── Génération des PDF "Magnifiques Mathématiques" bloc par bloc ── */
       const sendResults = async () => {
         setBusy(true); setProgress(0);
         try {
@@ -942,59 +778,86 @@ FORMAT DE RÉPONSE JSON STRICT :
           let pdfB64 = null, pdfFilename = null;
 
           try {
-            setStatus(`Génération du document PDF pour ${prenom}…`);
+            setStatus(`Génération du document PDF haute-résolution pour ${prenom}…`);
             
             const hiddenDiv = document.createElement("div");
             hiddenDiv.style.position = "absolute";
             hiddenDiv.style.top = "-9999px";
             hiddenDiv.style.left = "-9999px";
             hiddenDiv.style.width = "800px";
-            hiddenDiv.style.padding = "40px";
             hiddenDiv.style.background = "#ffffff";
             hiddenDiv.style.color = "#111827";
             hiddenDiv.style.fontFamily = "system-ui, -apple-system, sans-serif";
             
+            const appendBlock = (htmlContent, padding="20px 40px") => {
+              const block = document.createElement("div");
+              block.className = "pdf-block";
+              block.style.padding = padding;
+              block.innerHTML = htmlContent;
+              hiddenDiv.appendChild(block);
+            };
+
+            appendBlock(`
+              <div style="border-bottom: 2px solid #e5e7eb; padding-bottom: 15px;">
+                <h1 style="font-size:34px; margin:0 0 10px 0;">Bilan personnalisé et Corrigé</h1>
+                <h2 style="font-size:24px; margin:0 0 10px 0; color:#4b5563;">Élève : ${c.name}</h2>
+                <h2 style="font-size:28px; margin:0; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</h2>
+              </div>
+            `, "40px 40px 10px 40px");
+
+            if (appreciation) {
+              appendBlock(`<div style="font-size:17px; line-height:1.6;"><strong>Appréciation :</strong><br/> ${latexToHtml(appreciation)}</div>`, "10px 40px");
+            }
+
             const detailsHtml = (c.details||[]).map(d => 
-              `<div style="margin-bottom: 12px;"><b>${d.exercice}</b> : ${d.obtenu}/${d.sur} — ${d.remarque ? latexToHtml(d.remarque).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '') : ''}</div>`
+              `<div style="margin-bottom: 12px; padding: 12px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;">
+                <b style="color: #1d4ed8; font-size: 18px;">${d.exercice}</b> : <span style="font-weight: 600; font-size: 18px;">${d.obtenu}/${d.sur}</span> 
+                ${d.remarque ? `<div style="margin-top: 8px; color: #374151;">${latexToHtml(d.remarque)}</div>` : ''}
+              </div>`
             ).join("");
 
-            const latexHtml = generalLatexCorrection ? latexToHtml(generalLatexCorrection) : '<p style="font-style:italic">Aucun corrigé détaillé disponible.</p>';
+            appendBlock(`
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px;">
+                <h3 style="margin-top:0; font-size:22px; color: #111827;">Détail par exercice</h3>
+                <div style="font-size:16px; line-height:1.6;">${detailsHtml}</div>
+              </div>
+            `, "15px 40px");
+
+            if (conseil) {
+              appendBlock(`
+                <div style="font-size:17px; line-height:1.6; padding: 16px; background: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 6px;">
+                  <strong>Conseil :</strong><br/> ${latexToHtml(conseil)}
+                </div>
+              `, "10px 40px");
+            }
+
+            appendBlock(`
+              <div style="border-top: 2px solid #e5e7eb; padding-top: 20px;">
+                <h3 style="margin-top:0; font-size:24px;">Corrigé détaillé</h3>
+              </div>
+            `, "20px 40px 10px 40px");
+
+            const tempCorr = document.createElement("div");
+            tempCorr.innerHTML = generalLatexCorrection ? latexToHtml(generalLatexCorrection) : '<p style="font-style:italic">Aucun corrigé détaillé disponible.</p>';
             
-            hiddenDiv.innerHTML = `
-              <div style="border-bottom: 2px solid #e5e7eb; padding-bottom: 20px; margin-bottom: 20px;">
-                <h1 style="font-size:28px; margin:0 0 10px 0;">Bilan personnalisé et Corrigé</h1>
-                <h2 style="font-size:20px; margin:0 0 10px 0; color:#4b5563;">Élève : ${c.name}</h2>
-                <h2 style="font-size:24px; margin:0; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</h2>
-              </div>
-              
-              <div style="font-size:16px; line-height:1.6; margin-bottom: 20px;">
-                <strong>Appréciation :</strong> ${appreciation ? latexToHtml(appreciation).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '') : ''}
-              </div>
-              
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                <h3 style="margin-top:0; font-size:18px;">Détail par exercice</h3>
-                <div style="font-size:15px; line-height:1.6;">
-                  ${detailsHtml}
-                </div>
-              </div>
-              
-              ${conseil ? `
-              <div style="font-size:16px; line-height:1.6; padding: 15px; background: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 4px; margin-bottom: 20px;">
-                <strong>Conseil :</strong> ${latexToHtml(conseil).replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '')}
-              </div>` : ""}
-              
-              <div style="border-top: 2px solid #e5e7eb; padding-top: 20px; margin-top: 20px;">
-                <h3 style="margin-top:0; font-size:18px;">Corrigé de l'épreuve</h3>
-                <div style="font-size:15px; line-height:1.8;">
-                  ${latexHtml}
-                </div>
-              </div>
-            `;
+            // On divise le corrigé en multiples blocs pour éviter que les équations ne soient coupées entre 2 pages
+            Array.from(tempCorr.childNodes).forEach(node => {
+              if (node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) return;
+              const block = document.createElement("div");
+              block.className = "pdf-block";
+              block.style.padding = "6px 40px";
+              block.style.fontSize = "17px";
+              block.style.lineHeight = "1.8";
+              if (node.nodeType === Node.TEXT_NODE) {
+                block.textContent = node.textContent;
+              } else {
+                block.appendChild(node.cloneNode(true));
+              }
+              hiddenDiv.appendChild(block);
+            });
             
             document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 150));
-            const canvas = await window.html2canvas(hiddenDiv, {scale: 1.5, useCORS: true, backgroundColor: "#ffffff"});
-            document.body.removeChild(hiddenDiv);
+            await new Promise(r => setTimeout(r, 250)); // Laisse KaTeX et le navigateur peindre la page
 
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
@@ -1002,21 +865,55 @@ FORMAT DE RÉPONSE JSON STRICT :
             const H = pdf.internal.pageSize.getHeight();
             const m = 15;
             const iw = W - m*2;
-            let remaining = (canvas.height * iw) / canvas.width;
-            let srcY = 0;
+            let currentY = m;
             
-            while(remaining > 0) {
-              const sliceH = Math.min(remaining, H - m*2);
-              const sc = document.createElement("canvas");
-              const ratio = canvas.width / iw;
-              sc.width = canvas.width;
-              sc.height = sliceH * ratio;
-              sc.getContext("2d").drawImage(canvas, 0, srcY * ratio, canvas.width, sliceH * ratio, 0, 0, canvas.width, sliceH * ratio);
-              if(srcY > 0) pdf.addPage();
-              pdf.addImage(sc.toDataURL("image/jpeg", 0.8), "JPEG", m, m, iw, sliceH, undefined, 'FAST');
-              srcY += sliceH;
-              remaining -= sliceH;
+            const blocks = Array.from(hiddenDiv.querySelectorAll('.pdf-block'));
+
+            for (let i = 0; i < blocks.length; i++) {
+              const b = blocks[i];
+              if (!b.innerText.trim() && !b.querySelector('.katex')) continue;
+              
+              // scale: 2.5 pour une netteté chirurgicale (Magnifiques Mathématiques)
+              const canvas = await window.html2canvas(b, {scale: 2.5, useCORS: true, backgroundColor: "#ffffff"}); 
+              const imgH = (canvas.height * iw) / canvas.width;
+              
+              // Saut de page intelligent si le bloc ne rentre pas
+              if (currentY + imgH > H - m && currentY > m + 10) {
+                pdf.addPage();
+                currentY = m;
+              }
+              
+              // Sécurité anti-débordement pour un bloc immense (rare)
+              if (imgH > H - 2*m) {
+                let remaining = imgH;
+                let srcY = 0;
+                const canvasRatio = canvas.width / iw;
+                while(remaining > 0) {
+                  const sliceH = Math.min(remaining, H - currentY - m);
+                  const slicePixH = sliceH * canvasRatio;
+                  
+                  const sc = document.createElement("canvas");
+                  sc.width = canvas.width;
+                  sc.height = slicePixH;
+                  sc.getContext("2d").drawImage(canvas, 0, srcY, canvas.width, slicePixH, 0, 0, sc.width, sc.height);
+                  
+                  pdf.addImage(sc.toDataURL("image/jpeg", 0.98), "JPEG", m, currentY, iw, sliceH, undefined, 'FAST');
+                  
+                  remaining -= sliceH;
+                  srcY += slicePixH;
+                  currentY += sliceH;
+                  if (remaining > 0) {
+                    pdf.addPage();
+                    currentY = m;
+                  }
+                }
+              } else {
+                pdf.addImage(canvas.toDataURL("image/jpeg", 0.98), "JPEG", m, currentY, iw, imgH, undefined, 'FAST');
+                currentY += imgH;
+              }
             }
+
+            document.body.removeChild(hiddenDiv);
 
             const pdfArrayBuffer = pdf.output("arraybuffer");
             pdfB64 = uint8ToBase64(new Uint8Array(pdfArrayBuffer));
@@ -1053,13 +950,14 @@ FORMAT DE RÉPONSE JSON STRICT :
               </Field>
               <Field label="🤖 Modèle d'IA pour la correction">
                 <select value={modelChoice} onChange={e => setModelChoice(e.target.value)}>
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommandé - Sans limites de lots)</option>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommandé)</option>
+                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Rapide)</option>
                   <option value="gemini-2.5-pro">Gemini 2.5 Pro (Lent - Limité par Google)</option>
                 </select>
               </Field>
             </div>
             {!apiKey&&<p style={{ fontSize:12,color:"#dc2626",marginTop:6 }}>⚠️ Saisissez votre clé API Gemini pour activer l'outil.</p>}
-            {apiKey&&<p style={{ fontSize:12,color:"#16a34a",marginTop:6 }}>✓ Prêt avec {modelChoice === "gemini-2.5-flash" ? "Flash (file de sécurité active)" : "Pro (Pauses longues requises)"}.</p>}
+            {apiKey&&<p style={{ fontSize:12,color:"#16a34a",marginTop:6 }}>✓ Prêt avec {modelChoice}.</p>}
           </Card>
 
           <div style={{ display:"flex", alignItems:"flex-start", marginBottom:"2rem" }}>
@@ -1147,8 +1045,8 @@ FORMAT DE RÉPONSE JSON STRICT :
               <Card>
                 <div style={{ fontSize:14,fontWeight:500,marginBottom:10 }}>📄 Copies à corriger</div>
                 
-                <div style={{ background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:12,color:"#166534" }}>
-                  💡 <strong>Nouveau processus :</strong> Déposez votre grand PDF scanné. Lancez la <strong>Détection de la pagination</strong> pour pré-remplir le tableau des élèves, ajustez manuellement les pages au besoin, puis lancez la correction.
+                <div style={{ background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:13,color:"#166534" }}>
+                  💡 <strong>Processus simplifié :</strong> Déposez votre PDF contenant les copies des élèves. L'IA va analyser le document, trouver la copie correspondante pour chaque élève de votre liste, et la corriger automatiquement.
                 </div>
 
                 <div onDragOver={e=>e.preventDefault()}
@@ -1158,80 +1056,28 @@ FORMAT DE RÉPONSE JSON STRICT :
                   <input id="copies-pdf2" type="file" accept="application/pdf" multiple style={{ display:"none" }}
                     onChange={e=>addCopiesPdf(e.target.files)}/>
                   {copiesPdfs.length===0
-                    ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez votre fichier PDF complet ici ou cliquez</span>
-                    : <span style={{ color:"#16a34a",fontSize:13 }}>✓ {copiesPdfs.length} lot(s) chargé(s)</span>
+                    ? <span style={{ color:"#6b7280",fontSize:13 }}>Glissez votre fichier PDF ici ou cliquez</span>
+                    : <span style={{ color:"#16a34a",fontSize:13, fontWeight:500 }}>✓ {copiesPdfs.length} lot(s) de copies chargé(s)</span>
                   }
                 </div>
 
                 {copiesPdfs.length>0&&(
-                  <div style={{ marginBottom:10 }}>
+                  <div style={{ marginBottom:14 }}>
                     {copiesPdfs.map((p,i)=>(
                       <div key={i} style={{ display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"4px 8px",background:"#f3f4f6",borderRadius:6,marginBottom:4 }}>
                         <span>📄 {p.name}</span>
-                        <span style={{ color:"#dc2626",cursor:"pointer",padding:"0 4px" }}
+                        <span style={{ color:"#dc2626",cursor:"pointer",padding:"0 4px",fontWeight:600 }}
                           onClick={()=>setCopiesPdfs(prev=>prev.filter((_,j)=>j!==i))}>✕</span>
                       </div>
                     ))}
                   </div>
                 )}
 
-                {/* Bouton Étape A : Cartographie */}
-                {copiesPdfs.length > 0 && pageMappings.length === 0 && (
-                  <button disabled={busy||!apiKey||students.length===0} onClick={mapPagesFromPdf} style={{ width:"100%",marginBottom:8, background:"#1d4ed8" }}>
-                    {busy?"Cartographie des entêtes en cours…":"🔍 1. Détecter automatiquement les pages par élève"}
+                {copiesPdfs.length > 0 && (
+                  <button disabled={busy||!apiKey||students.length===0} onClick={executeCorrection} style={{ width:"100%", background: "#16a34a", border: "none", padding: "12px", fontSize: 14, fontWeight: 500 }}>
+                    {busy ? "Correction en cours..." : `🤖 Lancer la correction globale (${students.length} élèves)`}
                   </button>
                 )}
-
-                {/* Tableau interactif de gestion des pages */}
-                {pageMappings.length > 0 && (
-                  <div style={{ marginTop: 16, padding: "12px", background: "#f9fafb", border: "1px solid #d1d5db", borderRadius: 8 }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 8 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600 }}>📋 Vérification de la pagination des copies</span>
-                      <button onClick={() => setPageMappings([])} style={{ background:"#ef4444", border:"none", padding:"2px 8px", fontSize:11, borderRadius:4 }}>Effacer</button>
-                    </div>
-                    <div style={{ overflowX: "auto", marginBottom: 12 }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                        <thead>
-                          <tr style={{ background: "#e5e7eb", textAlign: "left" }}>
-                            <th style={{ padding: "6px" }}>Élève</th>
-                            <th style={{ padding: "6px", width: "85px" }}>Page Début</th>
-                            <th style={{ padding: "6px", width: "85px" }}>Page Fin</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {pageMappings.map(m => (
-                            <tr key={m.id} style={{ borderBottom: "1px solid #e5e7eb" }}>
-                              <td style={{ padding: "6px", fontWeight: 500 }}>{m.name}</td>
-                              <td style={{ padding: "6px" }}>
-                                <input type="number" min="1" value={m.pageStart} onChange={e => handleMappingChange(m.id, 'pageStart', e.target.value)} style={{ width: "70px", padding: "2px" }} />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input type="number" min="1" value={m.pageEnd} onChange={e => handleMappingChange(m.id, 'pageEnd', e.target.value)} style={{ width: "70px", padding: "2px" }} />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Bouton Étape B : Correction groupée */}
-                    <button disabled={busy||!apiKey} onClick={executeCorrectionFromMapping} style={{ width:"100%", background: "#16a34a", border: "none", padding: "10px" }}>
-                      {busy?"Correction de la file d'attente…":`🤖 2. Lancer la correction complète de toutes les copies (${pageMappings.length})`}
-                    </button>
-                  </div>
-                )}
-                
-                <div style={{ textAlign:"center",fontSize:12,color:"#9ca3af",margin:"20px 0 6px" }}>— ou si saisie manuelle de texte —</div>
-                {students.map(s=>(
-                  <Card key={s.id}>
-                    <SectionHead title={s.name}/>
-                    <Field label="Réponses de l'élève">
-                      <textarea value={answers[s.id]||""} onChange={e=>setAnswers({...answers,[s.id]:e.target.value})}
-                        placeholder="Saisissez ou résumez les réponses…" style={{ minHeight:80,fontFamily:"monospace",fontSize:12 }}/>
-                    </Field>
-                  </Card>
-                ))}
-                {hasAnswers&&<button disabled={busy||!apiKey||students.length===0} onClick={correctAll} style={{ width:"100%" }}>{busy?"Correction en cours…":"🤖 Corriger les textes unitairement ↗"}</button>}
               </Card>
             )}
             
@@ -1247,7 +1093,6 @@ FORMAT DE RÉPONSE JSON STRICT :
                     <SectionHead title={s.name} right={c&&!c.skipped
                       ?<div style={{ display:"flex",alignItems:"center",gap:8 }}>
                           {c.reviewNeeded && <Bdg color="danger">⚠️ À relire</Bdg>}
-                          {c.pageStart&&<Bdg color="info">p.{c.pageStart}–{c.pageEnd}</Bdg>}
                           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             <input 
                               type="text" 
@@ -1320,7 +1165,7 @@ FORMAT DE RÉPONSE JSON STRICT :
               })()}
 
               <div style={{ display:"flex",gap:8,marginTop:4 }}>
-                <button onClick={()=>{setCorrections([]); setPageMappings([]);}} style={{ flex:1,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db" }}>↩ Recommencer</button>
+                <button onClick={()=>{setCorrections([]);}} style={{ flex:1,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db" }}>↩ Recommencer</button>
                 <button disabled={busy||!apiKey} onClick={()=>document.getElementById("late-pdf").click()}
                   style={{ flex:1,background:"#f3f4f6",color:"#1d4ed8",border:"0.5px solid #bfdbfe",fontSize:12 }}>
                   ➕ Copie en retard
@@ -1341,7 +1186,7 @@ FORMAT DE RÉPONSE JSON STRICT :
                       
                       parts.push({ text: `Corrige cette copie en retard (PDF joint).
 FORMAT STRICT JSON :
-[{"name":"Nom Prénom","pageStart":1,"pageEnd":1,"analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
+[{"name":"Nom Prénom","analyse_decryptage_brouillon":"...","note":14.25,"reviewNeeded":false,"appreciation":"...","details":[{"exercice":"Exercice 1","sur":2.0,"obtenu":1.0,"remarque":"..."}],"conseil":"...","latexCorrection":"\\\\section*{Corrigé}\\\\n..."}]` });
                       
                       const raw = await callGemini(apiKey, parts, sysInstructionLate, true, modelChoice, (msg) => { setStatus(`[Retard] ${msg}`); });
                       const arr = safeJSONParse(raw);
