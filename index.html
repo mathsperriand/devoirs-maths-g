@@ -31,9 +31,10 @@
     textarea { resize: vertical; }
     select:focus, textarea:focus, input:focus { outline: 2px solid #1d4ed8; outline-offset: 1px; }
     h1 { font-size: 18px; font-weight: 600; }
-    /* Amélioration des styles KaTeX pour le rendu PDF */
     .katex-display { margin: 1.5em 0 !important; overflow-x: auto; overflow-y: hidden; padding: 5px 0; }
     .math-block-container { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 12px 0; }
+    /* Permet un retour à la ligne sécurisé pour les longs mots dans les PDF */
+    .pdf-block { word-wrap: break-word; overflow-wrap: break-word; }
   </style>
 </head>
 <body>
@@ -173,19 +174,19 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    /* ── API Google Gemini ── */
+    /* ── API Google Gemini Sécurisée contre la charge (503 / 429) ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetryNotify = null) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
       
-      const generationConfig = { temperature: 0.1 }; // Très légère température pour le corrigé
+      const generationConfig = { temperature: 0.1 }; 
       if (jsonMode) generationConfig.responseMimeType = "application/json";
       
       body.generationConfig = generationConfig;
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
       let attempt = 0;
-      const maxAttempts = 5;
+      const maxAttempts = 6;
       let backoffDelay = 4000;
 
       while (attempt < maxAttempts) {
@@ -196,10 +197,11 @@
             body: JSON.stringify(body),
           });
 
-          if (res.status === 429) {
+          // Interception du quota (429) ET de la surcharge serveur mondiale (503)
+          if (res.status === 429 || res.status === 503) {
             attempt++;
-            if (attempt >= maxAttempts) throw new Error(`Limite de l'API Google persistante.`);
-            if (onRetryNotify) onRetryNotify(`Quota saturé (429). Pause de ${backoffDelay / 1000}s...`);
+            if (attempt >= maxAttempts) throw new Error(`Google est saturé (${res.status}). Veuillez réessayer plus tard.`);
+            if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Pause de ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
             backoffDelay *= 1.5;
             continue;
@@ -209,10 +211,11 @@
           if (data.error) throw new Error(data.error.message);
           return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
         } catch (error) {
-          if (error.message?.includes("429") || error.message?.toLowerCase().includes("quota") || error.message?.toLowerCase().includes("fetch")) {
+          const msg = error.message?.toLowerCase() || "";
+          if (msg.includes("429") || msg.includes("503") || msg.includes("high demand") || msg.includes("quota") || msg.includes("fetch")) {
             attempt++;
             if (attempt >= maxAttempts) throw error;
-            if (onRetryNotify) onRetryNotify(`Réseau/Quota saturé. Pause de ${backoffDelay / 1000}s...`);
+            if (onRetryNotify) onRetryNotify(`Surcharge détectée. Reprise dans ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
             backoffDelay *= 1.5;
             continue;
@@ -241,36 +244,39 @@
       }
     }
 
-    /* ── NOUVEAU PARSER DE MATHS PARFAITES ── */
+    /* ── PARSEUR LATEX ROBUSTE (Élimination des { et $ parasites) ── */
     function latexToHtml(src) {
       if (!src) return "";
       if (!window.katex) return `<pre>${src}</pre>`;
       
-      // Nettoyage des antislashs doublés par le JSON avant le rendu KaTeX
+      // Nettoyage primaire
       let text = src.replace(/\\\\/g, '\\'); 
 
-      // 1. Remplacement des blocs d'équations (Display mode)
+      // 1. Mettre les environnements mathématiques (array, cases...) dans un mode Display sécurisé
+      text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases|tabular)\}([\s\S]*?)\\end\{\1\}/g, (match) => {
+        // Si l'IA n'a pas mis les dollars autour, on les force pour éviter que ça bave.
+        return `$$${match}$$`;
+      });
+
+      // 2. Remplacement des doubles dollars (Equations centrées)
       text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, eq) => {
-        try {
-          return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`;
-        } catch { return `<div class="math-block-container">$$${eq}$$</div>`; }
+        try { return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`; }
+        catch { return `<div class="math-block-container">$$${eq}$$</div>`; }
       });
 
-      // 1bis. Remplacement des blocs d'équations alternatifs \[ ... \]
+      // 2bis. Remplacement des balises \[ ... \]
       text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, eq) => {
-        try {
-          return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`;
-        } catch { return `<div class="math-block-container">\\[${eq}\\]</div>`; }
+        try { return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`; }
+        catch { return `<div class="math-block-container">\\[${eq}\\]</div>`; }
       });
 
-      // 2. Remplacement des équations en ligne (Inline mode)
+      // 3. Remplacement des simples dollars (Equations en ligne)
       text = text.replace(/\$([^\$\n]+?)\$/g, (_, eq) => {
-        try {
-          return window.katex.renderToString(eq, { displayMode: false, throwOnError: false });
-        } catch { return `$${eq}$`; }
+        try { return window.katex.renderToString(eq, { displayMode: false, throwOnError: false }); }
+        catch { return `$${eq}$`; }
       });
 
-      // 3. Conversion du Markdown/LaTeX de structure vers HTML simple
+      // 4. Conversion du reste du Markdown/LaTeX de structure
       text = text
         .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:28px; margin-bottom:14px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
         .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:20px; margin-bottom:10px;">$1</h3>')
@@ -278,10 +284,12 @@
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
         .replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>')
         .replace(/\\underline\{([^}]+)\}/g, '<u>$1</u>')
+        // Listes
         .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) =>
           `<ol style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
         .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) =>
           `<ul style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
+        // Retours chariot
         .replace(/\\newline/g, '<br/>')
         .replace(/\n\n/g, '</p><p style="margin:12px 0; line-height:1.7;">')
         .replace(/\n/g, '<br/>');
@@ -447,7 +455,7 @@
         setBusy(false);
       };
 
-      /* ── NOUVEAUTÉ : GÉNÉRATION DU CORRIGÉ DE RÉFÉRENCE ── */
+      /* ── GÉNÉRATION DU CORRIGÉ DE RÉFÉRENCE ── */
       const generateMasterKey = async () => {
         if (!upSubPdf || !apiKey) return;
         setBusy(true); setStatus("Génération du corrigé officiel (Formatage Mathématique Optimal)...");
@@ -456,12 +464,12 @@
             { inlineData: { mimeType: "application/pdf", data: upSubPdf } },
             { text: "Résous ce sujet de mathématiques de manière exhaustive. Dédaille chaque étape de calcul." }
           ];
-          const sysInstruction = `Tu es un professeur de mathématiques agrégé. Rédige un corrigé parfait, structuré et détaillé.
+          const sysInstruction = `Tu es un professeur de mathématiques. Rédige un corrigé parfait, structuré et détaillé.
 RÈGLES DE FORMATAGE (CRITIQUE) :
 - Structure avec \\section*{Exercice X} et \\subsection*{Question Y}.
-- Isole TOUTES les équations importantes ou longues sur leur propre ligne avec les balises $$...$$ (Display mode).
-- Utilise $...$ pour les petites formules au sein d'une phrase.
-- Double tous tes antislashs LaTeX si besoin pour qu'ils ne disparaissent pas au parsage.`;
+- Isole TOUTES les équations et tableaux sur leur propre ligne avec les balises $$...$$ (Display mode).
+- Utilise $...$ pour les petites formules.
+- Double tous tes antislashs LaTeX si besoin pour qu'ils ne disparaissent pas au parsage JSON.`;
           
           const raw = await callGemini(apiKey, parts, sysInstruction, false, modelChoice, msg => setStatus(`[Génération Corrigé] ${msg}`));
           setMasterCorrection(raw);
@@ -470,7 +478,7 @@ RÈGLES DE FORMATAGE (CRITIQUE) :
         setBusy(false);
       };
 
-      /* ── CORRECTION GLOBALE ARCHITECTURE 3 PHASES + INJECTION DU MASTER KEY ── */
+      /* ── CORRECTION GLOBALE 3 PHASES ── */
       const executeCorrection = async () => {
         if (!copiesPdfs.length || !apiKey || !students.length || !masterCorrection) return;
         setBusy(true); setStatus("Préparation du document global..."); setProgress(5);
@@ -535,23 +543,25 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
             while (count > 0) { setStatus(`Temporisation (${count}s) avant ${s.name}...`); await delay(1000); count--; }
           }
 
-          const sysInstruction = `Tu es un correcteur. Tu tutoies l'élève. Utilise le corrigé de référence et respecte les directives du professeur. Double TOUS tes antislashs LaTeX dans le JSON (ex: \\\\frac). Entoure les équations avec $...$ dans les remarques.`;
+          const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Double TOUS tes antislashs LaTeX dans le JSON (ex: \\\\frac). Entoure les équations avec $...$ dans les remarques.`;
           
+          // NOUVEAUTÉ : Demande d'un niveau de détail absolu pour chaque sous-question
           const promptText = `
-CORRIGÉ OFFICIEL DU PROFESSEUR :
+CORRIGÉ OFFICIEL :
 ${masterCorrection}
 
-DIRECTIVES DE CORRECTION / BARÈME :
-${userDirectives || "Aucune consigne spécifique. Applique un barème classique sur 20."}
+DIRECTIVES ET BARÈME :
+${userDirectives || "Applique un barème classique sur 20."}
 
-TÂCHE : Voici la copie de ${s.name}. Évalue-la en te basant STRICTEMENT sur le corrigé et les directives ci-dessus.
+TÂCHE : Voici la copie de ${s.name}. Évalue-la STRICTEMENT sur le corrigé et les directives.
+SOIS EXTRÊMEMENT DÉTAILLÉ dans tes remarques pour CHAQUE sous-question (1.a, 1.b, etc.). Explique précisément où est l'erreur, calcule les points correspondants.
 FORMAT JSON STRICT ATTENDU :
 {
   "note": 14.5,
   "reviewNeeded": false,
-  "appreciation": "${s.name.split(" ")[0]}, bon travail mais...",
-  "details": [ { "exercice": "Ex 1", "sur": 5.0, "obtenu": 4.0, "remarque": "Bien, mais l'équation $2x=4$..." } ],
-  "conseil": "Relis tes factorisations."
+  "appreciation": "${s.name.split(" ")[0]}, ton raisonnement est bon, mais attention...",
+  "details": [ { "exercice": "Ex 1 - Q1.a", "sur": 2.0, "obtenu": 1.5, "remarque": "La factorisation est correcte jusqu'à l'avant-dernière ligne, mais tu as fait une erreur de signe : $2x-4=0 \\implies x=2$." } ],
+  "conseil": "Relis tes formules de dérivation."
 }`;
 
           try {
@@ -561,7 +571,6 @@ FORMAT JSON STRICT ATTENDU :
             ];
             const raw = await callGemini(apiKey, parts, sysInstruction, true, modelChoice, msg => setStatus(`[Correction ${s.name}] ${msg}`));
             const parsed = safeJSONParse(raw);
-            // On associe le Master Corrigé à la copie pour le PDF final
             results.push({...s, ...parsed, latexCorrection: masterCorrection});
           } catch(e) {
             results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection: masterCorrection});
@@ -589,11 +598,18 @@ FORMAT JSON STRICT ATTENDU :
           const body = `Bonjour ${prenom},\n\nVoici ton résultat pour le devoir de mathématiques "${sessionName}".\n\nTu trouveras en pièce jointe ton bilan personnalisé et le corrigé détaillé.\n\nCordialement,`;
           let pdfB64 = null;
 
+          // CHAMBRE NOIRE - DÉSACTIVATION DU BLOCAGE UI
+          const hiddenDiv = document.createElement("div");
+          hiddenDiv.style.position = "absolute"; 
+          hiddenDiv.style.top = "-9999px"; 
+          hiddenDiv.style.left = "-9999px"; // Ligne cruciale ajoutée pour l'invisibilité
+          hiddenDiv.style.zIndex = "-1000";
+          hiddenDiv.style.width = "800px";
+          hiddenDiv.style.background = "#ffffff"; 
+          hiddenDiv.style.color = "#111827"; 
+          hiddenDiv.style.fontFamily = "system-ui, sans-serif";
+          
           try {
-            const hiddenDiv = document.createElement("div");
-            hiddenDiv.style.position = "absolute"; hiddenDiv.style.top = "-9999px"; hiddenDiv.style.width = "800px";
-            hiddenDiv.style.background = "#ffffff"; hiddenDiv.style.color = "#111827"; hiddenDiv.style.fontFamily = "system-ui, sans-serif";
-            
             const appendBlock = (htmlContent, padding="20px 40px") => {
               const block = document.createElement("div"); block.className = "pdf-block"; block.style.padding = padding;
               block.innerHTML = htmlContent; hiddenDiv.appendChild(block);
@@ -635,7 +651,7 @@ FORMAT JSON STRICT ATTENDU :
             });
             
             document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 300)); // Rendu KaTeX
+            await new Promise(r => setTimeout(r, 400)); // Laisse KaTeX afficher sereinement
 
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
@@ -667,12 +683,18 @@ FORMAT JSON STRICT ATTENDU :
                 currentY += imgH;
               }
             }
-            document.body.removeChild(hiddenDiv);
             pdfB64 = uint8ToBase64(new Uint8Array(pdf.output("arraybuffer")));
-          } catch(e) { console.error(e); }
+          } catch(e) { 
+            console.error("Erreur PDF :", e); 
+          } finally {
+            // SÉCURITÉ ABSOLUE : Détruire la div dans tous les cas pour ne pas bloquer l'écran
+            if (document.body.contains(hiddenDiv)) document.body.removeChild(hiddenDiv);
+          }
           
-          try { await sendGmail(c.email, subject, body, pdfB64, `Bilan_Maths_${prenom}.pdf`); } 
-          catch(e) { errors.push(c.name); }
+          try { 
+            if (pdfB64) await sendGmail(c.email, subject, body, pdfB64, `Bilan_Maths_${prenom}.pdf`); 
+            else throw new Error("PDF null");
+          } catch(e) { errors.push(c.name); }
         }
         setProgress(100); setMailsDone(true); setBusy(false);
         setStatus(errors.length ? `⚠️ Échec envois : ${errors.join(", ")}` : "✅ Mails envoyés !");
