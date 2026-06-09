@@ -33,7 +33,6 @@
     h1 { font-size: 18px; font-weight: 600; }
     .katex-display { margin: 1.5em 0 !important; overflow-x: auto; overflow-y: hidden; padding: 5px 0; }
     .math-block-container { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 12px 0; }
-    /* Permet un retour à la ligne sécurisé pour les longs mots dans les PDF */
     .pdf-block { word-wrap: break-word; overflow-wrap: break-word; }
   </style>
 </head>
@@ -174,7 +173,7 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    /* ── API Google Gemini Sécurisée contre la charge (503 / 429) ── */
+    /* ── API Google Gemini ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetryNotify = null) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
@@ -186,7 +185,7 @@
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
       let attempt = 0;
-      const maxAttempts = 12; // CORRECTIF : Augmentation des tentatives pour les longues classes
+      const maxAttempts = 12;
       let backoffDelay = 4000;
 
       while (attempt < maxAttempts) {
@@ -197,13 +196,12 @@
             body: JSON.stringify(body),
           });
 
-          // Interception du quota (429) ET de la surcharge serveur mondiale (503)
           if (res.status === 429 || res.status === 503) {
             attempt++;
             if (attempt >= maxAttempts) throw new Error(`Google est saturé (${res.status}). Veuillez réessayer plus tard.`);
             if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Pause de ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
-            backoffDelay = Math.min(backoffDelay * 1.5, 30000); // CORRECTIF : Plafond à 30s d'attente max par boucle
+            backoffDelay = Math.min(backoffDelay * 1.5, 30000);
             continue;
           }
 
@@ -217,7 +215,7 @@
             if (attempt >= maxAttempts) throw error;
             if (onRetryNotify) onRetryNotify(`Surcharge détectée. Reprise dans ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
-            backoffDelay = Math.min(backoffDelay * 1.5, 30000); // CORRECTIF : Plafond à 30s d'attente max par boucle
+            backoffDelay = Math.min(backoffDelay * 1.5, 30000);
             continue;
           }
           throw error;
@@ -244,39 +242,32 @@
       }
     }
 
-    /* ── PARSEUR LATEX ROBUSTE (Élimination des { et $ parasites) ── */
+    /* ── PARSEUR LATEX ROBUSTE (Protection Anti-Crash + Tableaux) ── */
     function latexToHtml(src) {
       if (!src) return "";
       if (!window.katex) return `<pre>${src}</pre>`;
-      
-      // Nettoyage primaire
-      let text = src.replace(/\\\\/g, '\\'); 
 
-      // 1. Mettre les environnements mathématiques (array, cases...) dans un mode Display sécurisé
-      text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases|tabular)\}([\s\S]*?)\\end\{\1\}/g, (match) => {
-        // Si l'IA n'a pas mis les dollars autour, on les force pour éviter que ça bave.
-        return `$$${match}$$`;
+      // CORRECTIF : Remplacement forcé de "tabular" par "array" pour compatibilité KaTeX
+      let text = src.replace(/\{tabular\}/g, '{array}');
+
+      const mathBlocks = [];
+
+      // ETAPE 1 : Extraire et protéger toutes les expressions mathématiques (pour éviter d'y injecter des balises HTML)
+      text = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, eq) => {
+        mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`;
+      });
+      text = text.replace(/\\\[([\s\S]+?)\\\]/g, (match, eq) => {
+        mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`;
+      });
+      // Protéger les environnements s'ils n'ont pas été encadrés par $$ par l'IA
+      text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases)\}([\s\S]*?)\\end\{\1\}/g, (match) => {
+        mathBlocks.push({ mode: 'display', eq: match }); return `__MATH_${mathBlocks.length - 1}__`;
+      });
+      text = text.replace(/\$([^\$\n]+?)\$/g, (match, eq) => {
+        mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`;
       });
 
-      // 2. Remplacement des doubles dollars (Equations centrées)
-      text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, eq) => {
-        try { return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`; }
-        catch { return `<div class="math-block-container">$$${eq}$$</div>`; }
-      });
-
-      // 2bis. Remplacement des balises \[ ... \]
-      text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, eq) => {
-        try { return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`; }
-        catch { return `<div class="math-block-container">\\[${eq}\\]</div>`; }
-      });
-
-      // 3. Remplacement des simples dollars (Equations en ligne)
-      text = text.replace(/\$([^\$\n]+?)\$/g, (_, eq) => {
-        try { return window.katex.renderToString(eq, { displayMode: false, throwOnError: false }); }
-        catch { return `$${eq}$`; }
-      });
-
-      // 4. Conversion du reste du Markdown/LaTeX de structure
+      // ETAPE 2 : Traitement Markdown classique uniquement sur le texte (sans casser les maths)
       text = text
         .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:28px; margin-bottom:14px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
         .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:20px; margin-bottom:10px;">$1</h3>')
@@ -284,15 +275,27 @@
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
         .replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>')
         .replace(/\\underline\{([^}]+)\}/g, '<u>$1</u>')
-        // Listes
         .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) =>
           `<ol style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
         .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) =>
           `<ul style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
-        // Retours chariot
         .replace(/\\newline/g, '<br/>')
         .replace(/\n\n/g, '</p><p style="margin:12px 0; line-height:1.7;">')
-        .replace(/\n/g, '<br/>');
+        .replace(/\n/g, '<br/>'); // Les blocs mathématiques sont protégés contre ce saut de ligne ravageur
+
+      // ETAPE 3 : Rendre les équations via KaTeX et les réinsérer
+      text = text.replace(/__MATH_(\d+)__/g, (match, idx) => {
+        const block = mathBlocks[idx];
+        try {
+          if (block.mode === 'display') {
+            return `<div class="math-block-container" style="overflow-x:auto;">${window.katex.renderToString(block.eq, { displayMode: true, throwOnError: false, strict: false })}</div>`;
+          } else {
+            return window.katex.renderToString(block.eq, { displayMode: false, throwOnError: false, strict: false });
+          }
+        } catch(e) {
+          return `<span style="color:red;">Erreur KaTeX: $${block.eq}$</span>`;
+        }
+      });
 
       return '<p style="margin:12px 0; line-height:1.7; font-size:15px;">' + text + '</p>';
     }
@@ -301,11 +304,6 @@
     function Card({ children }) { return <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"1.25rem", marginBottom:"1rem", boxShadow:"0 1px 2px rgba(0,0,0,0.05)" }}>{children}</div>; }
     function Field({ label, children }) { return <div style={{ marginBottom:12 }}><span style={{ display:"block", fontSize:13, fontWeight:500, color:"#374151", marginBottom:6 }}>{label}</span>{children}</div>; }
     function SectionHead({ title, right }) { return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}><span style={{ fontSize:15, fontWeight:600 }}>{title}</span>{right}</div>; }
-    function Bdg({ color, children }) {
-      const m = { success:["#dcfce7","#16a34a"], danger:["#fee2e2","#dc2626"], info:["#dbeafe","#1d4ed8"] };
-      const [bg,tc] = m[color]||m.info;
-      return <span style={{ fontSize:11, fontWeight:600, padding:"4px 10px", borderRadius:6, background:bg, color:tc }}>{children}</span>;
-    }
 
     /* ── SessionManager ── */
     function SessionManager({ onSelect }) {
@@ -464,11 +462,13 @@
             { inlineData: { mimeType: "application/pdf", data: upSubPdf } },
             { text: "Résous ce sujet de mathématiques de manière exhaustive. Dédaille chaque étape de calcul." }
           ];
+          // AJOUT: Consigne interdisant formellement 'tabular' au profit de 'array'
           const sysInstruction = `Tu es un professeur de mathématiques. Rédige un corrigé parfait, structuré et détaillé.
 RÈGLES DE FORMATAGE (CRITIQUE) :
 - Structure avec \\section*{Exercice X} et \\subsection*{Question Y}.
-- Isole TOUTES les équations et tableaux sur leur propre ligne avec les balises $$...$$ (Display mode).
+- Isole TOUTES les équations sur leur propre ligne avec les balises $$...$$ (Display mode).
 - Utilise $...$ pour les petites formules.
+- N'utilise JAMAIS l'environnement \\begin{tabular}. Pour les tableaux (signes, variations), utilise EXCLUSIVEMENT l'environnement mathématique \\begin{array} et entoure-le toujours de $$...$$.
 - Double tous tes antislashs LaTeX si besoin pour qu'ils ne disparaissent pas au parsage JSON.`;
           
           const raw = await callGemini(apiKey, parts, sysInstruction, false, modelChoice, msg => setStatus(`[Génération Corrigé] ${msg}`));
@@ -488,7 +488,7 @@ RÈGLES DE FORMATAGE (CRITIQUE) :
         catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
 
         /* PHASE 1 : Cartographie globale */
-        setStatus("Phase 1/3 : Repérage des copies dans le lot (0 token gâché)...");
+        setStatus("Phase 1/3 : Repérage des copies dans le lot...");
         let pageMapping = [];
         try {
           const studentList = students.map(s => `- ${s.name}`).join("\n");
@@ -543,9 +543,8 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
             while (count > 0) { setStatus(`Temporisation (${count}s) avant ${s.name}...`); await delay(1000); count--; }
           }
 
-          const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Double TOUS tes antislashs LaTeX dans le JSON (ex: \\\\frac). Entoure les équations avec $...$ dans les remarques.`;
+          const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Double TOUS tes antislashs LaTeX dans le JSON. Entoure les équations avec $...$ dans les remarques. Pour les tableaux, utilise EXCLUSIVEMENT \\begin{array} entouré de $$, JAMAIS tabular.`;
           
-          // NOUVEAUTÉ : Demande d'un niveau de détail absolu pour chaque sous-question
           const promptText = `
 CORRIGÉ OFFICIEL :
 ${masterCorrection}
@@ -598,17 +597,14 @@ FORMAT JSON STRICT ATTENDU :
           const body = `Bonjour ${prenom},\n\nVoici ton résultat pour le devoir de mathématiques "${sessionName}".\n\nTu trouveras en pièce jointe ton bilan personnalisé et le corrigé détaillé.\n\nCordialement,`;
           let pdfB64 = null;
 
-          // CHAMBRE NOIRE - DÉSACTIVATION DU BLOCAGE UI
+          // CORRECTIF : Repositionnement hors-écran sécurisé avec overflow pour éviter la pollution visuelle
           const hiddenDiv = document.createElement("div");
           hiddenDiv.style.position = "absolute"; 
-          
-          // CORRECTIF : Remplacement des -9999px par top/left 0, mais caché derrière l'interface
-          hiddenDiv.style.top = "0px"; 
-          hiddenDiv.style.left = "0px"; 
-          hiddenDiv.style.zIndex = "-10000";
-          hiddenDiv.style.pointerEvents = "none";
-          
+          hiddenDiv.style.top = "-9999px"; 
+          hiddenDiv.style.left = "-9999px"; 
+          hiddenDiv.style.zIndex = "-1000";
           hiddenDiv.style.width = "800px";
+          hiddenDiv.style.overflow = "hidden";
           hiddenDiv.style.background = "#ffffff"; 
           hiddenDiv.style.color = "#111827"; 
           hiddenDiv.style.fontFamily = "system-ui, sans-serif";
@@ -655,7 +651,7 @@ FORMAT JSON STRICT ATTENDU :
             });
             
             document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 400)); // Laisse KaTeX afficher sereinement
+            await new Promise(r => setTimeout(r, 400));
 
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
@@ -691,7 +687,6 @@ FORMAT JSON STRICT ATTENDU :
           } catch(e) { 
             console.error("Erreur PDF :", e); 
           } finally {
-            // SÉCURITÉ ABSOLUE : Détruire la div dans tous les cas pour ne pas bloquer l'écran
             if (document.body.contains(hiddenDiv)) document.body.removeChild(hiddenDiv);
           }
           
@@ -875,7 +870,16 @@ FORMAT JSON STRICT ATTENDU :
               <SectionHead title="Diffusion des Résultats"/>
               <div style={{ display:"flex", gap:12, marginBottom:20 }}>
                 <button onClick={()=>{
-                  const rows = validCorrs.map(c => `"${c.name}","${c.note}","${(c.appreciation||"").replace(/"/g,"'")}","${(c.conseil||"").replace(/"/g,"'")}"`);
+                  // CORRECTIF : Tri alphabétique du CSV par nom de famille (dernier mot du nom)
+                  const rows = [...validCorrs]
+                    .sort((a, b) => {
+                      const getLastName = name => {
+                        const parts = name.trim().split(/\s+/);
+                        return parts.length > 1 ? parts.pop().toLowerCase() : name.toLowerCase();
+                      };
+                      return getLastName(a.name).localeCompare(getLastName(b.name), 'fr');
+                    })
+                    .map(c => `"${c.name}","${c.note}","${(c.appreciation||"").replace(/"/g,"'")}","${(c.conseil||"").replace(/"/g,"'")}"`);
                   const a = document.createElement("a"); a.href = "data:text/csv;charset=utf-8," + encodeURIComponent("\uFEFF\"Nom\",\"Note\",\"Appreciation\",\"Conseil\"\n" + rows.join("\n"));
                   a.download = `Notes_${sessionName.replace(/\W/g,"_")}.csv`; a.click();
                 }} style={{ flex:1, background:"#f8fafc", color:"#0f172a", border:"1px solid #cbd5e1" }}>📊 Exporter Tableur (CSV)</button>
