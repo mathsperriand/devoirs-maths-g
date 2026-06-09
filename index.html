@@ -33,6 +33,7 @@
     h1 { font-size: 18px; font-weight: 600; }
     .katex-display { margin: 1.5em 0 !important; overflow-x: auto; overflow-y: hidden; padding: 5px 0; }
     .math-block-container { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 12px 0; }
+    /* Permet un retour à la ligne sécurisé pour les longs mots dans les PDF */
     .pdf-block { word-wrap: break-word; overflow-wrap: break-word; }
   </style>
 </head>
@@ -42,6 +43,7 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "👥 Élèves", "🎯 Corrigé & Barème", "✏️ Correction", "📬 Résultats"];
 
+    /* ── Gmail OAuth & Utilities ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
     const GMAIL_SENDER    = "maths.perriand@gmail.com";
     const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
@@ -155,6 +157,7 @@
       }
     }
 
+    /* ── Gestionnaire de sessions ── */
     const ROOT = "prof_maths_sessions";
     const ACTIVE_KEY = "prof_maths_active";
 
@@ -171,6 +174,7 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
+    /* ── API Google Gemini Sécurisée contre la charge (503 / 429) ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetryNotify = null) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
@@ -182,7 +186,7 @@
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
       let attempt = 0;
-      const maxAttempts = 6;
+      const maxAttempts = 12; // CORRECTIF : Augmentation des tentatives pour les longues classes
       let backoffDelay = 4000;
 
       while (attempt < maxAttempts) {
@@ -193,12 +197,13 @@
             body: JSON.stringify(body),
           });
 
+          // Interception du quota (429) ET de la surcharge serveur mondiale (503)
           if (res.status === 429 || res.status === 503) {
             attempt++;
             if (attempt >= maxAttempts) throw new Error(`Google est saturé (${res.status}). Veuillez réessayer plus tard.`);
             if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Pause de ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
-            backoffDelay *= 1.5;
+            backoffDelay = Math.min(backoffDelay * 1.5, 30000); // CORRECTIF : Plafond à 30s d'attente max par boucle
             continue;
           }
 
@@ -212,7 +217,7 @@
             if (attempt >= maxAttempts) throw error;
             if (onRetryNotify) onRetryNotify(`Surcharge détectée. Reprise dans ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
-            backoffDelay *= 1.5;
+            backoffDelay = Math.min(backoffDelay * 1.5, 30000); // CORRECTIF : Plafond à 30s d'attente max par boucle
             continue;
           }
           throw error;
@@ -239,31 +244,39 @@
       }
     }
 
+    /* ── PARSEUR LATEX ROBUSTE (Élimination des { et $ parasites) ── */
     function latexToHtml(src) {
       if (!src) return "";
       if (!window.katex) return `<pre>${src}</pre>`;
       
+      // Nettoyage primaire
       let text = src.replace(/\\\\/g, '\\'); 
 
+      // 1. Mettre les environnements mathématiques (array, cases...) dans un mode Display sécurisé
       text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases|tabular)\}([\s\S]*?)\\end\{\1\}/g, (match) => {
+        // Si l'IA n'a pas mis les dollars autour, on les force pour éviter que ça bave.
         return `$$${match}$$`;
       });
 
+      // 2. Remplacement des doubles dollars (Equations centrées)
       text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, eq) => {
         try { return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`; }
         catch { return `<div class="math-block-container">$$${eq}$$</div>`; }
       });
 
+      // 2bis. Remplacement des balises \[ ... \]
       text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, eq) => {
         try { return `<div class="math-block-container">${window.katex.renderToString(eq, { displayMode: true, throwOnError: false })}</div>`; }
         catch { return `<div class="math-block-container">\\[${eq}\\]</div>`; }
       });
 
+      // 3. Remplacement des simples dollars (Equations en ligne)
       text = text.replace(/\$([^\$\n]+?)\$/g, (_, eq) => {
         try { return window.katex.renderToString(eq, { displayMode: false, throwOnError: false }); }
         catch { return `$${eq}$`; }
       });
 
+      // 4. Conversion du reste du Markdown/LaTeX de structure
       text = text
         .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:28px; margin-bottom:14px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
         .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:20px; margin-bottom:10px;">$1</h3>')
@@ -271,10 +284,12 @@
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
         .replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>')
         .replace(/\\underline\{([^}]+)\}/g, '<u>$1</u>')
+        // Listes
         .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) =>
           `<ol style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
         .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) =>
           `<ul style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
+        // Retours chariot
         .replace(/\\newline/g, '<br/>')
         .replace(/\n\n/g, '</p><p style="margin:12px 0; line-height:1.7;">')
         .replace(/\n/g, '<br/>');
@@ -282,10 +297,17 @@
       return '<p style="margin:12px 0; line-height:1.7; font-size:15px;">' + text + '</p>';
     }
 
+    /* ── UI Components ── */
     function Card({ children }) { return <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"1.25rem", marginBottom:"1rem", boxShadow:"0 1px 2px rgba(0,0,0,0.05)" }}>{children}</div>; }
     function Field({ label, children }) { return <div style={{ marginBottom:12 }}><span style={{ display:"block", fontSize:13, fontWeight:500, color:"#374151", marginBottom:6 }}>{label}</span>{children}</div>; }
     function SectionHead({ title, right }) { return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}><span style={{ fontSize:15, fontWeight:600 }}>{title}</span>{right}</div>; }
+    function Bdg({ color, children }) {
+      const m = { success:["#dcfce7","#16a34a"], danger:["#fee2e2","#dc2626"], info:["#dbeafe","#1d4ed8"] };
+      const [bg,tc] = m[color]||m.info;
+      return <span style={{ fontSize:11, fontWeight:600, padding:"4px 10px", borderRadius:6, background:bg, color:tc }}>{children}</span>;
+    }
 
+    /* ── SessionManager ── */
     function SessionManager({ onSelect }) {
       const [sessions, setSessions] = useState(() => getAllSessions());
       const [newName,  setNewName]  = useState("");
@@ -345,6 +367,7 @@
       return <Devoir sessionId={sessionId} sessionName={sessionName} onBack={()=>{ setSessionId(null); setSessionName(""); }}/>;
     }
 
+    /* ── DEVOIR APP ── */
     function Devoir({ sessionId, sessionName, onBack }) {
       const load = (key, fallback) => { const s=getSession(sessionId); return s[key]!==undefined?s[key]:fallback; };
       const persist = (key, val) => { const s=getSession(sessionId); s[key]=val; saveSession(sessionId, {...getAllSessions()[sessionId],...s,[key]:val}); };
@@ -361,6 +384,7 @@
       const setModelChoice = v => { setModelChoiceRaw(v); persist("modelChoice", v); };
       const setStep = v => { setStepRaw(v); persist("step",v); };
 
+      /* Etapes Datas */
       const [upSubPdf, setUpSubPdf] = useState(null);
       const [upSubPdfName, setUpSubPdfNameRaw] = useState(() => load("upSubPdfName", ""));
       const setUpSubPdfName = v => { setUpSubPdfNameRaw(v); persist("upSubPdfName",v); };
@@ -370,6 +394,7 @@
       const [copiesPdfs, setCopiesPdfsRaw] = useState([]);
       const setCopiesPdfs = (v) => { if (typeof v === 'function') { setCopiesPdfsRaw(prev => { const next = v(prev); persist("copiesPdfsCount", next.length); return next; }); } else { setCopiesPdfsRaw(v); persist("copiesPdfsCount", v.length); } };
 
+      /* LE CORRIGÉ DE RÉFÉRENCE */
       const [masterCorrection, setMasterCorrectionRaw] = useState(() => load("masterCorrection", ""));
       const setMasterCorrection = v => { setMasterCorrectionRaw(v); persist("masterCorrection", v); };
       const [userDirectives, setUserDirectivesRaw] = useState(() => load("userDirectives", ""));
@@ -430,6 +455,7 @@
         setBusy(false);
       };
 
+      /* ── GÉNÉRATION DU CORRIGÉ DE RÉFÉRENCE ── */
       const generateMasterKey = async () => {
         if (!upSubPdf || !apiKey) return;
         setBusy(true); setStatus("Génération du corrigé officiel (Formatage Mathématique Optimal)...");
@@ -452,7 +478,7 @@ RÈGLES DE FORMATAGE (CRITIQUE) :
         setBusy(false);
       };
 
-      /* ── CORRECTION GLOBALE SÉCURISÉE ET PROGRESSIVE ── */
+      /* ── CORRECTION GLOBALE 3 PHASES ── */
       const executeCorrection = async () => {
         if (!copiesPdfs.length || !apiKey || !students.length || !masterCorrection) return;
         setBusy(true); setStatus("Préparation du document global..."); setProgress(5);
@@ -461,6 +487,7 @@ RÈGLES DE FORMATAGE (CRITIQUE) :
         try { mergedB64 = await mergePdfs(copiesPdfs); }
         catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
 
+        /* PHASE 1 : Cartographie globale */
         setStatus("Phase 1/3 : Repérage des copies dans le lot (0 token gâché)...");
         let pageMapping = [];
         try {
@@ -474,6 +501,7 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
           pageMapping = safeJSONParse(rawMapping);
         } catch(e) { setStatus("❌ Échec cartographie : " + e.message); setBusy(false); return; }
 
+        /* PHASE 2 & 3 : Découpage virtuel + Évaluation ciblée */
         setProgress(20);
         const { PDFDocument } = window.PDFLib;
         let srcDoc;
@@ -481,25 +509,14 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
         catch(e) { setStatus("❌ Erreur PDF-Lib : " + e.message); setBusy(false); return; }
         
         const totalPages = srcDoc.getPageCount();
-        
-        // Récupération de l'état actuel pour pouvoir reprendre là où on s'est arrêté
-        let currentCorrs = [...corrections];
+        const results = [];
 
         for (let i = 0; i < students.length; i++) {
           const s = students[i];
-          
-          // Sauvegarde intelligente : on ignore l'évaluation si l'élève possède déjà une note valide
-          const existing = currentCorrs.find(x => x.id === s.id);
-          if (existing && !existing.skipped && existing.note !== "?") {
-            continue;
-          }
-
           const mapData = pageMapping.find(m => m.name && m.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
           
           if (!mapData || !mapData.pageStart) {
-            const failed = {...s, skipped: true, note: "?", appreciation: "Copie introuvable.", details: []};
-            currentCorrs = currentCorrs.filter(x => x.id !== s.id).concat(failed);
-            setCorrections(currentCorrs);
+            results.push({...s, skipped: true, note: "?", appreciation: "Copie introuvable.", details: []});
             continue;
           }
 
@@ -516,12 +533,7 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
             }
           } catch(e) {}
 
-          if (!subPdfB64) { 
-            const failed = {...s, skipped: true, note: "?", appreciation: "Erreur découpage.", details: []};
-            currentCorrs = currentCorrs.filter(x => x.id !== s.id).concat(failed);
-            setCorrections(currentCorrs);
-            continue; 
-          }
+          if (!subPdfB64) { results.push({...s, skipped: true, note: "?", appreciation: "Erreur découpage.", details: []}); continue; }
 
           setStatus(`Phase 3/3 : Correction ciblée de ${s.name} (${i + 1}/${students.length})…`);
           setProgress(20 + Math.round((i / students.length) * 80));
@@ -533,6 +545,7 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
 
           const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Double TOUS tes antislashs LaTeX dans le JSON (ex: \\\\frac). Entoure les équations avec $...$ dans les remarques.`;
           
+          // NOUVEAUTÉ : Demande d'un niveau de détail absolu pour chaque sous-question
           const promptText = `
 CORRIGÉ OFFICIEL :
 ${masterCorrection}
@@ -558,29 +571,22 @@ FORMAT JSON STRICT ATTENDU :
             ];
             const raw = await callGemini(apiKey, parts, sysInstruction, true, modelChoice, msg => setStatus(`[Correction ${s.name}] ${msg}`));
             const parsed = safeJSONParse(raw);
-            const success = {...s, ...parsed, latexCorrection: masterCorrection};
-            currentCorrs = currentCorrs.filter(x => x.id !== s.id).concat(success);
+            results.push({...s, ...parsed, latexCorrection: masterCorrection});
           } catch(e) {
-            const failed = {...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection: masterCorrection};
-            currentCorrs = currentCorrs.filter(x => x.id !== s.id).concat(failed);
+            results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection: masterCorrection});
           }
-          
-          // Sauvegarde en temps réel à chaque élève traité
-          setCorrections(currentCorrs);
         }
 
-        setProgress(100); setBusy(false);
+        setProgress(100); setCorrections(results); setBusy(false);
         setStatus("✅ Évaluation par lot terminée !"); setTimeout(() => setStatus(""), 4000);
       };
 
-      /* ── DIFFUSION BLINDÉE (CORRECTION DU CRASH COMPILATION / VARIABLE) ── */
       const sendResults = async () => {
         setBusy(true); setProgress(0);
         try { await getGmailToken(); } catch(e) { setStatus("❌ " + e.message); setBusy(false); return; }
         
         let errors = [];
         const activeStudents = corrections.filter(c => !c.skipped && c.email);
-        const emailSubject = `Bilan de mathématiques : ${sessionName}`;
         
         for(let idx=0; idx<activeStudents.length; idx++){
           const c = activeStudents[idx];
@@ -592,11 +598,16 @@ FORMAT JSON STRICT ATTENDU :
           const body = `Bonjour ${prenom},\n\nVoici ton résultat pour le devoir de mathématiques "${sessionName}".\n\nTu trouveras en pièce jointe ton bilan personnalisé et le corrigé détaillé.\n\nCordialement,`;
           let pdfB64 = null;
 
+          // CHAMBRE NOIRE - DÉSACTIVATION DU BLOCAGE UI
           const hiddenDiv = document.createElement("div");
           hiddenDiv.style.position = "absolute"; 
-          hiddenDiv.style.top = "-9999px"; 
-          hiddenDiv.style.left = "-9999px"; 
-          hiddenDiv.style.zIndex = "-1000";
+          
+          // CORRECTIF : Remplacement des -9999px par top/left 0, mais caché derrière l'interface
+          hiddenDiv.style.top = "0px"; 
+          hiddenDiv.style.left = "0px"; 
+          hiddenDiv.style.zIndex = "-10000";
+          hiddenDiv.style.pointerEvents = "none";
+          
           hiddenDiv.style.width = "800px";
           hiddenDiv.style.background = "#ffffff"; 
           hiddenDiv.style.color = "#111827"; 
@@ -644,7 +655,7 @@ FORMAT JSON STRICT ATTENDU :
             });
             
             document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 400)); 
+            await new Promise(r => setTimeout(r, 400)); // Laisse KaTeX afficher sereinement
 
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
@@ -664,16 +675,7 @@ FORMAT JSON STRICT ATTENDU :
               if (imgH > H - 2*m) {
                 let remaining = imgH, srcY = 0; const ratio = canvas.width / iw;
                 while(remaining > 0) {
-                  let sliceH = Math.min(remaining, H - currentY - m);
-                  
-                  // Blindage contre le gel : force la page suivante si l'espace restant est nul ou négatif
-                  if (sliceH <= 0) {
-                    pdf.addPage();
-                    currentY = m;
-                    sliceH = Math.min(remaining, H - currentY - m);
-                    if (sliceH <= 0) break;
-                  }
-                  
+                  const sliceH = Math.min(remaining, H - currentY - m);
                   const sc = document.createElement("canvas"); sc.width = canvas.width; sc.height = sliceH * ratio;
                   sc.getContext("2d").drawImage(canvas, 0, srcY, canvas.width, sliceH * ratio, 0, 0, sc.width, sc.height);
                   pdf.addImage(sc.toDataURL("image/jpeg", 0.98), "JPEG", m, currentY, iw, sliceH, undefined, 'FAST');
@@ -689,11 +691,12 @@ FORMAT JSON STRICT ATTENDU :
           } catch(e) { 
             console.error("Erreur PDF :", e); 
           } finally {
+            // SÉCURITÉ ABSOLUE : Détruire la div dans tous les cas pour ne pas bloquer l'écran
             if (document.body.contains(hiddenDiv)) document.body.removeChild(hiddenDiv);
           }
           
           try { 
-            if (pdfB64) await sendGmail(c.email, emailSubject, body, pdfB64, `Bilan_Maths_${prenom}.pdf`); 
+            if (pdfB64) await sendGmail(c.email, sessionName, body, pdfB64, `Bilan_Maths_${prenom}.pdf`); 
             else throw new Error("PDF null");
           } catch(e) { errors.push(c.name); }
         }
@@ -830,7 +833,7 @@ FORMAT JSON STRICT ATTENDU :
               ) : (
                 <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
                   <div style={{ background:"#dcfce7", color:"#166534", padding:"12px", borderRadius:8, fontSize:14, fontWeight:500 }}>
-                    ✅ Corrections en cours ou terminées. Vous pouvez ajuster les notes ci-dessous à tout moment. Si des copies ont échoué, cliquez sur le bouton de reprise en bas de page.
+                    ✅ Corrections terminées. Vous pouvez ajuster les notes et mots de passe ci-dessous.
                   </div>
                   {students.map(s=>{
                     const c=corrections.find(x=>x.id===s.id);
@@ -861,12 +864,7 @@ FORMAT JSON STRICT ATTENDU :
                       </div>
                     );
                   })}
-                  <div style={{ display:"flex", gap:10 }}>
-                    <button disabled={busy} onClick={executeCorrection} style={{ flex:1, background:"#4f46e5" }}>
-                      🔄 Relancer uniquement les copies en échec ou manquantes
-                    </button>
-                    <button onClick={()=>setCorrections([])} style={{ background:"#f1f5f9", color:"#475569" }}>↻ Tout réinitialiser</button>
-                  </div>
+                  <button onClick={()=>setCorrections([])} style={{ background:"#f1f5f9", color:"#475569" }}>↻ Réinitialiser les corrections</button>
                 </div>
               )}
             </Card>
