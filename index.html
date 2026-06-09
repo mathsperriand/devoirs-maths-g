@@ -185,7 +185,7 @@
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
       let attempt = 0;
-      const maxAttempts = 30; // AUGMENTATION MASSIVE: Ne lâche jamais l'affaire sur un 503
+      const maxAttempts = 30; // Sécurité massive contre la saturation
       let backoffDelay = 5000;
 
       while (attempt < maxAttempts) {
@@ -201,7 +201,7 @@
             if (attempt >= maxAttempts) throw new Error(`Google est saturé (${res.status}). Veuillez réessayer plus tard.`);
             if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Tentative ${attempt}/${maxAttempts} dans ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
-            backoffDelay = Math.min(backoffDelay * 1.5, 20000); // Plafond à 20s pour marteler sans bloquer
+            backoffDelay = Math.min(backoffDelay * 1.5, 20000);
             continue;
           }
 
@@ -230,16 +230,20 @@
       });
     }
 
+    /* ── PARSEUR JSON BLINDÉ CONTRE LES ERREURS DE L'IA ── */
     function safeJSONParse(rawText) {
       try {
         let cleanRaw = rawText.trim();
         if (cleanRaw.startsWith('```json')) cleanRaw = cleanRaw.replace(/^```json/, '').replace(/```$/, '').trim();
         else if (cleanRaw.startsWith('```')) cleanRaw = cleanRaw.replace(/^```/, '').replace(/```$/, '').trim();
 
-        // RÉPARATION JSON MAGIQUE:
-        // L'IA oublie souvent de doubler les antislashs LaTeX en JSON. "\frac" devient "frac" (car \f = form feed).
-        // Cette ligne repère les commandes LaTeX classiques précédées d'un seul antislash et le double.
-        cleanRaw = cleanRaw.replace(/([^\\])\\(frac|times|text|begin|end|sqrt|left|right|alpha|beta|gamma|theta|pi|int|sum|lim|infty|quad|to|implies|equiv|cdot|ldots|vdots|ddots|le|ge)/g, '$1\\\\$2');
+        // 1. SUPPRESSION DES SAUTS DE LIGNE (Pour éviter l'erreur "Bad control character")
+        cleanRaw = cleanRaw.replace(/[\r\n]+/g, ' ');
+
+        // 2. SAUVETAGE DES SYMBOLES MATHÉMATIQUES (La magie qui empêche \frac de devenir un saut de page)
+        // L'IA oublie parfois de doubler ses antislashs en JSON. Ce code intercepte toutes les commandes LaTeX 
+        // connues et s'assure qu'elles soient doublées AVANT que le parseur JSON ne les détruise.
+        cleanRaw = cleanRaw.replace(/\\(frac|times|text|theta|to|tilde|nabla|neq|nu|notin|rightarrow|rho|rangle|right|begin|beta|bar|mathbf|mathbb|uparrow|underbrace|sum|int|infty|alpha|gamma|delta|epsilon|sigma|omega|phi|psi|chi|eta|xi|zeta|pm|mp|le|ge|equiv|approx|propto|cdot|ldots|vdots|ddots|sqrt|left|middle|forall)/g, '\\\\$1');
 
         return JSON.parse(cleanRaw);
       } catch (error) {
@@ -248,63 +252,48 @@
       }
     }
 
-    /* ── PARSEUR LATEX OPTIMISÉ (Arbres, Tableaux & Protection Anti-Casse) ── */
+    /* ── PARSEUR LATEX OPTIMISÉ POUR KATEX (Arbres, Tableaux & Stabilité) ── */
     function latexToHtml(src) {
       if (!src) return "";
       if (!window.katex) return `<pre>${src}</pre>`;
 
-      // 1. SAUVETAGE DES ARBRES ET TABLEAUX
-      // KaTeX déteste \begin{tabular}, il exige \begin{array}. On convertit à la volée !
+      // KaTeX déteste \begin{tabular}, il exige \begin{array}. On convertit silencieusement.
       let text = src.replace(/\\begin\{tabular\}(\{[^}]*\})?/g, '\\begin{array}$1')
                     .replace(/\\end\{tabular\}/g, '\\end{array}');
 
       const mathBlocks = [];
 
-      // 2. EXTRACTION ET PROTECTION DES MATHS AVANT LE PARSING MARKDOWN
-      text = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, eq) => {
-        mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`;
-      });
-      text = text.replace(/\\\[([\s\S]+?)\\\]/g, (match, eq) => {
-        mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`;
-      });
-      text = text.replace(/\\\(([\s\S]+?)\\\)/g, (match, eq) => {
-        mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`;
-      });
-      text = text.replace(/\$([^\$\n]+?)\$/g, (match, eq) => {
-        mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`;
-      });
-      text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases)\}([\s\S]*?)\\end\{\1\}/g, (match) => {
-        mathBlocks.push({ mode: 'display', eq: match }); return `__MATH_${mathBlocks.length - 1}__`;
-      });
+      // Isoler et protéger toutes les expressions mathématiques
+      text = text.replace(/\$\$([\s\S]+?)\$\$/g, (m, eq) => { mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
+      text = text.replace(/\\\[([\s\S]+?)\\\]/g, (m, eq) => { mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
+      text = text.replace(/\\\(([\s\S]+?)\\\)/g, (m, eq) => { mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
+      text = text.replace(/\$([^\$\n]+?)\$/g, (m, eq) => { mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
+      text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases)\}([\s\S]*?)\\end\{\1\}/g, (m) => { mathBlocks.push({ mode: 'display', eq: m }); return `__MATH_${mathBlocks.length - 1}__`; });
 
-      // 3. MISE EN FORME DU TEXTE (Structure LaTeX vers HTML)
+      // Appliquer le Markdown sur le texte seulement
       text = text
-        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:28px; margin-bottom:14px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
-        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:20px; margin-bottom:10px;">$1</h3>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
         .replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>')
         .replace(/\\underline\{([^}]+)\}/g, '<u>$1</u>')
-        .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) =>
-          `<ol style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
-        .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) =>
-          `<ul style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s+/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
+        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:24px; margin-bottom:12px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
+        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:16px; margin-bottom:8px;">$1</h3>')
+        .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) => `<ol style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s*/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
+        .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) => `<ul style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s*/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
         .replace(/\\newline/g, '<br/>')
         .replace(/\n\n/g, '</p><p style="margin:12px 0; line-height:1.7;">')
         .replace(/\n/g, '<br/>');
 
-      // 4. RÉINJECTION DES MATHS COMPILÉES PAR KATEX
+      // Ré-injecter les mathématiques proprement rendues par KaTeX
       text = text.replace(/__MATH_(\d+)__/g, (match, idx) => {
         const block = mathBlocks[idx];
         try {
-          // strict: false permet à KaTeX d'être tolérant avec les petites erreurs d'espacement de l'IA
           if (block.mode === 'display') {
-            return `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${window.katex.renderToString(block.eq, { displayMode: true, throwOnError: false, strict: false })}</div>`;
+            return `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${window.katex.renderToString(block.eq, { displayMode: true, throwOnError: false })}</div>`;
           } else {
-            return window.katex.renderToString(block.eq, { displayMode: false, throwOnError: false, strict: false });
+            return window.katex.renderToString(block.eq, { displayMode: false, throwOnError: false });
           }
         } catch(e) {
-          return `<span style="color:#dc2626; font-weight:bold;">[Erreur LaTeX: $${block.eq}$]</span>`;
+          return `<span style="color:#dc2626; font-style:italic;">[Erreur LaTeX: $${block.eq}$]</span>`;
         }
       });
 
@@ -478,7 +467,7 @@ RÈGLES DE FORMATAGE (CRITIQUE) :
 - Structure avec \\section*{Exercice X} et \\subsection*{Question Y}.
 - Isole TOUTES les équations sur leur propre ligne avec les balises $$...$$ (Display mode).
 - Utilise $...$ pour les petites formules.
-- N'utilise JAMAIS l'environnement \\begin{tabular}. Pour les tableaux (signes, variations) ou les arbres de probabilités, utilise EXCLUSIVEMENT l'environnement mathématique \\begin{array} et entoure-le toujours de $$...$$.`;
+- N'utilise JAMAIS l'environnement \\begin{tabular}. Pour les tableaux de signes, de variations ou les arbres de probabilités, utilise EXCLUSIVEMENT l'environnement mathématique \\begin{array} et entoure-le toujours de $$...$$.`;
           
           const raw = await callGemini(apiKey, parts, sysInstruction, false, modelChoice, msg => setStatus(`[Génération Corrigé] ${msg}`));
           setMasterCorrection(raw);
@@ -554,10 +543,10 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
 
           const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Entoure TOUTES les équations avec $...$ dans les remarques. Pour les tableaux, utilise EXCLUSIVEMENT \\begin{array} entouré de $$.
 
-RÈGLE ABSOLUE ET VITALE POUR LE FORMAT JSON :
-Tu DOIS IMPÉRATIVEMENT doubler tous les antislashs des commandes mathématiques dans tes réponses JSON !
-Exemple: Tu dois écrire \\\\frac au lieu de \\frac. Tu dois écrire \\\\times au lieu de \\times.
-C'est obligatoire pour que le fichier ne soit pas corrompu.`;
+RÈGLES ABSOLUES ET VITALES POUR LE JSON :
+1. Tu DOIS IMPÉRATIVEMENT doubler tous les antislashs des commandes mathématiques (ex: \\\\frac au lieu de \\frac, \\\\times au lieu de \\times).
+2. INTERDICTION FORMELLE de faire des retours à la ligne (Entrée) dans tes textes. Écris chaque remarque sur une seule ligne continue.
+3. N'utilise jamais l'antislash (\\) seul en fin de ligne.`;
           
           const promptText = `
 CORRIGÉ OFFICIEL :
@@ -573,7 +562,7 @@ FORMAT JSON STRICT ATTENDU :
   "note": 14.5,
   "reviewNeeded": false,
   "appreciation": "${s.name.split(" ")[0]}, ton raisonnement est bon, mais attention...",
-  "details": [ { "exercice": "Ex 1 - Q1.a", "sur": 2.0, "obtenu": 1.5, "remarque": "La factorisation est correcte jusqu'à l'avant-dernière ligne, mais tu as fait une erreur de signe : $2x-4=0 \\\\implies x=2$." } ],
+  "details": [ { "exercice": "Ex 1 - Q1.a", "sur": 2.0, "obtenu": 1.5, "remarque": "La factorisation est correcte, mais attention au signe final : $2x-4=0 \\\\implies x=2$." } ],
   "conseil": "Relis tes formules de dérivation."
 }`;
 
@@ -612,12 +601,16 @@ FORMAT JSON STRICT ATTENDU :
           let pdfB64 = null;
 
           const hiddenDiv = document.createElement("div");
-          hiddenDiv.style.position = "absolute"; 
-          hiddenDiv.style.top = "-9999px"; 
-          hiddenDiv.style.left = "-9999px"; 
-          hiddenDiv.style.zIndex = "-1000";
+          // LA CORRECTION DU BLOCAGE À 0% EST ICI :
+          // Chrome met en veille ce qui sort de l'écran (-9999px). On force Chrome à peindre
+          // l'image en la rendant "fixe" en haut de l'écran, mais invisible et intouchable.
+          hiddenDiv.style.position = "fixed"; 
+          hiddenDiv.style.top = "0px"; 
+          hiddenDiv.style.left = "0px"; 
+          hiddenDiv.style.zIndex = "-10000";
+          hiddenDiv.style.opacity = "0.001";
+          hiddenDiv.style.pointerEvents = "none";
           hiddenDiv.style.width = "800px";
-          hiddenDiv.style.overflow = "hidden";
           hiddenDiv.style.background = "#ffffff"; 
           hiddenDiv.style.color = "#111827"; 
           hiddenDiv.style.fontFamily = "system-ui, sans-serif";
