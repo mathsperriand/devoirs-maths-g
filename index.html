@@ -3,835 +3,1323 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Gestionnaire de devoirs — Maths (Gemini)</title>
+  <title>Gestionnaire de devoirs — Maths</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: #f9fafb; color: #111827; min-height: 100vh; }
-    button {
-      padding: 8px 16px; border-radius: 8px; border: 0.5px solid #d1d5db;
-      background: #111827; color: #fff; cursor: pointer; font-size: 13px; font-weight: 500;
-      transition: opacity 0.15s, transform 0.05s;
-    }
-    button:hover:not(:disabled) { opacity: 0.85; }
-    button:active:not(:disabled) { transform: scale(0.98); }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
-    select, textarea, input[type=text], input[type=number], input[type=password] {
-      width: 100%; padding: 8px 10px; border: 0.5px solid #d1d5db; border-radius: 8px;
-      font-size: 13px; background: #fff; color: #111827; font-family: inherit;
-    }
-    textarea { resize: vertical; }
-    select:focus, textarea:focus, input:focus { outline: 2px solid #1d4ed8; outline-offset: 1px; }
-    h1 { font-size: 18px; font-weight: 600; }
-    .katex-display { margin: 1.5em 0 !important; overflow-x: auto; overflow-y: hidden; padding: 5px 0; }
-    .math-block-container { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 12px 0; }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,-apple-system,sans-serif;background:#f9fafb;color:#111827;min-height:100vh}
+    button{padding:8px 16px;border-radius:8px;border:0.5px solid #d1d5db;background:#111827;color:#fff;cursor:pointer;font-size:13px;transition:opacity .15s}
+    button:hover:not(:disabled){opacity:.85}
+    button:disabled{opacity:.4;cursor:not-allowed}
+    select,textarea,input[type=text],input[type=password]{width:100%;padding:8px 10px;border:0.5px solid #d1d5db;border-radius:8px;font-size:13px;background:#fff;color:#111827;font-family:inherit}
+    textarea{resize:vertical}
+    select:focus,textarea:focus,input:focus{outline:2px solid #1d4ed8;outline-offset:1px}
   </style>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="text/babel">
-    const { useState, useCallback, useEffect, useRef } = React;
-    const STEPS = ["📝 Sujet", "👥 Élèves", "🎯 Corrigé & Barème", "✏️ Correction", "📬 Résultats"];
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const STEPS = ["📝 Sujet","📄 Diffusion","✏️ Correction","📬 Résultats"];
 
-    /* ── Gmail OAuth & Envoi d'E-mails HTML ── */
-    const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
-    const GMAIL_SENDER    = "maths.perriand@gmail.com";
-    const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
+/* ══ Gmail OAuth ══════════════════════════════════════════════════ */
+const GMAIL_CLIENT_ID = "307432189627-58st09frfpui6cepdoij4mv4qil3s6bj.apps.googleusercontent.com";
+const GMAIL_SENDER    = "maths.perriand@gmail.com";
+const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
+var gmailToken = null;
 
-    let gmailAccessToken = null;
-
-    function getGmailToken() {
-      return new Promise((resolve, reject) => {
-        if (gmailAccessToken) { resolve(gmailAccessToken); return; }
-        if (!window.google?.accounts?.oauth2) {
-          reject(new Error("Google Identity Services non chargé. Vérifiez votre connexion.")); return;
-        }
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (!settled) { settled = true; reject(new Error("Délai d'autorisation dépassé.")); }
-        }, 120000);
-        const client = window.google.accounts.oauth2.initTokenClient({
-          client_id: GMAIL_CLIENT_ID,
-          scope: GMAIL_SCOPE,
-          login_hint: GMAIL_SENDER,
-          callback: (resp) => {
-            clearTimeout(timer);
-            if (settled) return;
-            settled = true;
-            if (resp.error) { reject(new Error(resp.error)); return; }
-            gmailAccessToken = resp.access_token;
-            setTimeout(() => { gmailAccessToken = null; }, (resp.expires_in - 60) * 1000);
-            resolve(gmailAccessToken);
-          },
-          error_callback: (err) => {
-            clearTimeout(timer);
-            if (!settled) { settled = true; reject(new Error(err.type || "Autorisation refusée")); }
-          }
-        });
-        client.requestAccessToken({ prompt: "select_account" });
-      });
+function getGmailToken() {
+  return new Promise(function(resolve, reject) {
+    if (gmailToken) { resolve(gmailToken); return; }
+    if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
+      reject(new Error("Google Identity Services non chargé")); return;
     }
-
-    async function mergePdfs(pdfList) {
-      if (pdfList.length === 1) return pdfList[0].b64;
-      const { PDFDocument } = window.PDFLib;
-      const merged = await PDFDocument.create();
-      for (const p of pdfList) {
-        const bytes = Uint8Array.from(atob(p.b64), c => c.charCodeAt(0));
-        const doc   = await PDFDocument.load(bytes);
-        const pages = await merged.copyPages(doc, doc.getPageIndices());
-        pages.forEach(pg => merged.addPage(pg));
+    var done = false;
+    var timer = setTimeout(function() {
+      if (!done) { done = true; reject(new Error("Délai dépassé — réessayez")); }
+    }, 120000);
+    window.google.accounts.oauth2.initTokenClient({
+      client_id: GMAIL_CLIENT_ID,
+      scope: GMAIL_SCOPE,
+      login_hint: GMAIL_SENDER,
+      callback: function(r) {
+        clearTimeout(timer);
+        if (done) return; done = true;
+        if (r.error) { reject(new Error(r.error)); return; }
+        gmailToken = r.access_token;
+        setTimeout(function() { gmailToken = null; }, (r.expires_in - 60) * 1000);
+        resolve(gmailToken);
+      },
+      error_callback: function(e) {
+        clearTimeout(timer);
+        if (!done) { done = true; reject(new Error(e.type || "Autorisation refusée")); }
       }
-      const bytes = await merged.save();
-      return uint8ToBase64(bytes);
-    }
+    }).requestAccessToken({ prompt: "select_account" });
+  });
+}
 
-    function uint8ToBase64(bytes) {
-      let binary = "";
-      const chunkSize = 8192;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-      }
-      return btoa(binary);
-    }
+function b64url(s) {
+  return btoa(unescape(encodeURIComponent(s)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
 
-    function b64url(str) {
-      return btoa(unescape(encodeURIComponent(str))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-    }
+function buildHtmlMime(to, subj, htmlBody) {
+  var katexCss = "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css";
+  var full = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/>"
+    + "<link rel=\"stylesheet\" href=\"" + katexCss + "\"/>"
+    + "<style>body{font-family:Georgia,serif;max-width:620px;margin:0 auto;padding:24px;color:#111;line-height:1.7;font-size:13pt}"
+    + "h1{font-size:15pt;border-bottom:1px solid #ccc;padding-bottom:8px;margin-bottom:16px}"
+    + "table{width:100%;border-collapse:collapse;font-size:11pt;margin-bottom:16px}"
+    + "td{padding:5px 8px;border-top:1px solid #e5e7eb;vertical-align:top}"
+    + ".note{font-size:24pt;font-weight:bold}"
+    + ".appr{color:#555;font-style:italic;margin-bottom:12px}"
+    + ".conseil{background:#eff6ff;border-left:3px solid #3b82f6;padding:12px 16px;margin-top:16px;border-radius:4px;color:#1e40af}"
+    + ".sig{margin-top:20px;color:#555;font-size:11pt}"
+    + "</style></head><body>" + htmlBody + "</body></html>";
+  return b64url([
+    "From: " + GMAIL_SENDER,
+    "To: " + to,
+    "Subject: =?UTF-8?B?" + btoa(unescape(encodeURIComponent(subj))) + "?=",
+    "MIME-Version: 1.0",
+    "Content-Type: text/html; charset=utf-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    btoa(unescape(encodeURIComponent(full)))
+  ].join("\r\n"));
+}
 
-    // Nouvelle fonction d'envoi d'e-mail direct en HTML (Remplace l'usine à gaz PDF)
-    function buildHtmlMime(to, subject, htmlBody) {
-      const katexCss = "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css";
-      const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-        <link rel="stylesheet" href="${katexCss}"/>
-        <style>
-          body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; color: #111; line-height: 1.6; font-size: 14px; }
-          h1 { font-size: 20px; border-bottom: 2px solid #1e3a8a; padding-bottom: 8px; color: #1e3a8a; margin-bottom: 16px; }
-          table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px; }
-          td { padding: 8px; border-top: 1px solid #e5e7eb; vertical-align: top; }
-          .math-block-container { overflow-x: auto; text-align: center; margin: 16px 0; }
-          .conseil { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; margin-top: 16px; border-radius: 4px; color: #1e40af; }
-          .details-box { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
-        </style></head><body>${htmlBody}</body></html>`;
+async function sendGmailHtml(to, subj, htmlBody) {
+  var token = await getGmailToken();
+  var raw = buildHtmlMime(to, subj, htmlBody);
+  var res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw: raw })
+  });
+  if (!res.ok) {
+    var err = await res.json();
+    throw new Error(err.error ? err.error.message : "Erreur Gmail");
+  }
+}
 
-      return b64url([
-        `From: ${GMAIL_SENDER}`,
-        `To: ${to}`,
-        `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
-        "MIME-Version: 1.0",
-        "Content-Type: text/html; charset=utf-8",
-        "Content-Transfer-Encoding: base64",
-        "",
-        btoa(unescape(encodeURIComponent(fullHtml)))
-      ].join("\r\n"));
-    }
+/* ══ jsPDF → base64 (chunked, sans stack overflow) ════════════════ */
+function pdfToBase64(pdf) {
+  var ab = pdf.output("arraybuffer");
+  var bytes = new Uint8Array(ab);
+  var bin = "", chunk = 8192;
+  for (var i = 0; i < bytes.length; i += chunk)
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  return btoa(bin);
+}
 
-    async function sendGmailHtml(to, subject, htmlBody) {
-      const token = await getGmailToken();
-      const raw   = buildHtmlMime(to, subject, htmlBody);
-      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        method: "POST",
-        headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
-        body: JSON.stringify({ raw }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error?.message || "Erreur Gmail");
-      }
-    }
+/* ══ Sessions localStorage ════════════════════════════════════════ */
+var ROOT_KEY = "pf_sessions", ACTIVE_KEY = "pf_active";
+function getSessions() { try { return JSON.parse(localStorage.getItem(ROOT_KEY) || "{}"); } catch(e) { return {}; } }
+function saveSession(id, d) { var a = getSessions(); a[id] = d; localStorage.setItem(ROOT_KEY, JSON.stringify(a)); }
+function getSession(id)  { return getSessions()[id] || {}; }
+function delSession(id)  { var a = getSessions(); delete a[id]; localStorage.setItem(ROOT_KEY, JSON.stringify(a)); if (localStorage.getItem(ACTIVE_KEY) === id) localStorage.removeItem(ACTIVE_KEY); }
+function getActive()     { return localStorage.getItem(ACTIVE_KEY) || null; }
+function setActive(id)   { localStorage.setItem(ACTIVE_KEY, id); }
+function newId()         { return "s_" + Date.now(); }
 
-    /* ── Gestionnaire de sessions ── */
-    const ROOT = "prof_maths_sessions";
-    const ACTIVE_KEY = "prof_maths_active";
-
-    function getAllSessions() { try { return JSON.parse(localStorage.getItem(ROOT) || "{}"); } catch { return {}; } }
-    function saveSession(id, data) { const all = getAllSessions(); all[id] = data; localStorage.setItem(ROOT, JSON.stringify(all)); }
-    function getSession(id) { return getAllSessions()[id] || {}; }
-    function deleteSession(id) {
-      const all = getAllSessions(); delete all[id]; localStorage.setItem(ROOT, JSON.stringify(all));
-      if (localStorage.getItem(ACTIVE_KEY) === id) localStorage.removeItem(ACTIVE_KEY);
-    }
-    function getActiveId() { return localStorage.getItem(ACTIVE_KEY) || null; }
-    function setActiveId(id) { localStorage.setItem(ACTIVE_KEY, id); }
-    function newSessionId() { return "s_" + Date.now(); }
-
-    const delay = ms => new Promise(res => setTimeout(res, ms));
-
-    /* ── API Google Gemini ── */
-    async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetryNotify = null) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-      const body = { contents: [{ parts: parts }] };
-      
-      const generationConfig = { temperature: 0.1 }; 
-      if (jsonMode) generationConfig.responseMimeType = "application/json";
-      
-      body.generationConfig = generationConfig;
-      if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
-
-      let attempt = 0;
-      const maxAttempts = 30; // Solidité maximale
-      let backoffDelay = 4000;
-
-      while (attempt < maxAttempts) {
-        try {
-          const res = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+/* ══ API Gemini (Remplacement de Claude) ═════════════════════════ */
+async function callGemini(key, messages, system) {
+  // Traduction du format de messages (Claude) vers le format (Gemini)
+  var geminiContents = messages.map(function(msg) {
+    var parts = [];
+    if (typeof msg.content === 'string') {
+      parts.push({ text: msg.content });
+    } else if (Array.isArray(msg.content)) {
+      msg.content.forEach(function(c) {
+        if (c.type === 'text') {
+          parts.push({ text: c.text });
+        } else if (c.type === 'document' || c.type === 'image') {
+          parts.push({
+            inlineData: {
+              mimeType: c.source.media_type,
+              data: c.source.data
+            }
           });
-
-          if (res.status === 429 || res.status === 503) {
-            attempt++;
-            if (attempt >= maxAttempts) throw new Error(`Google est saturé (${res.status}). Veuillez réessayer plus tard.`);
-            if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Tentative ${attempt}/${maxAttempts} dans ${Math.round(backoffDelay / 1000)}s...`);
-            await delay(backoffDelay);
-            backoffDelay = Math.min(backoffDelay * 1.5, 30000);
-            continue;
-          }
-
-          const data = await res.json();
-          if (data.error) throw new Error(data.error.message);
-          return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        } catch (error) {
-          const msg = error.message?.toLowerCase() || "";
-          if (msg.includes("429") || msg.includes("503") || msg.includes("high demand") || msg.includes("quota") || msg.includes("fetch")) {
-            attempt++;
-            if (attempt >= maxAttempts) throw error;
-            if (onRetryNotify) onRetryNotify(`Surcharge détectée. Reprise dans ${Math.round(backoffDelay / 1000)}s...`);
-            await delay(backoffDelay);
-            backoffDelay = Math.min(backoffDelay * 1.5, 30000);
-            continue;
-          }
-          throw error;
         }
-      }
-    }
-
-    function parseStudents(raw) {
-      return raw.trim().split("\n").filter(Boolean).map((line, i) => {
-        const [name, email] = line.split(",").map(s => s.trim());
-        return { id: i, name: name || `Élève ${i+1}`, email: email || "" };
       });
     }
+    return { role: msg.role === 'assistant' ? 'model' : 'user', parts: parts };
+  });
 
-    /* ── PARSEUR JSON INVINCIBLE ── */
-    function safeJSONParse(rawText) {
-      let text = rawText.trim();
-      if (text.startsWith('```json')) text = text.replace(/^```json/i, '').replace(/```$/, '').trim();
-      else if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
+  var body = {
+    contents: geminiContents,
+    generationConfig: { maxOutputTokens: 8192 }
+  };
 
-      try {
-        // Tentative nominale
-        return JSON.parse(text);
-      } catch (e) {
-        // RÉPARATION DE CHOC : L'IA a cassé le JSON. On le répare de force.
-        // 1. On supprime les retours à la ligne physiques qui corrompent les chaînes
-        text = text.replace(/[\r\n]+/g, ' ');
-        // 2. On supprime les caractères de contrôle invisibles
-        text = text.replace(/[\x00-\x1F]/g, '');
-        // 3. On double les antislashs qui ne font pas partie de la syntaxe JSON valide (Magie anti-LaTeX cassé)
-        text = text.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
-        
-        try {
-          return JSON.parse(text);
-        } catch (fatalError) {
-          console.error("Échec de la réparation JSON :", fatalError, text);
-          throw new Error("L'IA a renvoyé un format illisible. Essayez de relancer.");
-        }
+  if (system) {
+    body.systemInstruction = {
+      parts: [{ text: system }]
+    };
+  }
+
+  var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" + key, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  var data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+
+  if (data.candidates && data.candidates.length > 0 && data.candidates[0].content.parts.length > 0) {
+    return data.candidates[0].content.parts[0].text || "";
+  }
+  return "";
+}
+
+/* ══ LaTeX → HTML (KaTeX) ═════════════════════════════════════════ */
+/* ══ Réparation JSON LaTeX ════════════════════════════════════════
+   Claude/Gemini écrit parfois du LaTeX brut dans les valeurs JSON :
+     "remarque":"soit $\frac{a}{b}$"  ← \f, \s, \a… invalides en JSON
+   Cette fonction double tous les backslashes sauf \" \\ \n \uXXXX.
+   \n est préservé pour les sauts de ligne intentionnels.           */
+function fixJsonBackslashes(raw) {
+  var out = [], inStr = false, i = 0;
+  while (i < raw.length) {
+    var c = raw[i];
+    if (!inStr) {
+      out.push(c);
+      if (c === '"') inStr = true;
+      i++;
+    } else if (c === '\\') {
+      var n = raw[i + 1] || '';
+      if (n === '"' || n === '\\') {
+        out.push(c, n); i += 2;                                  // \" et \\ — garder
+      } else if (n === 'n') {
+        out.push(c, n); i += 2;                                  // \n newline — garder
+      } else if (n === 'u' && /[0-9a-fA-F]{4}/.test(raw.slice(i+2, i+6))) {
+        out.push(c, n, raw[i+2], raw[i+3], raw[i+4], raw[i+5]); i += 6; // \uXXXX — garder
+      } else {
+        out.push('\\', '\\'); i++;  // tout le reste (\frac \sum \theta …) — doubler
       }
+    } else {
+      if (c === '"') inStr = false;
+      out.push(c); i++;
     }
+  }
+  return out.join('');
+}
+function safeJsonParse(raw) {
+  var s = raw.replace(/```json|```/g, '').trim();
+  try { return JSON.parse(s); } catch(e) {
+    try { return JSON.parse(fixJsonBackslashes(s)); } catch(e2) {
+      throw new Error('JSON invalide : ' + e.message);
+    }
+  }
+}
 
-    /* ── PARSEUR LATEX ROBUSTE (Inspiré de l'excellence de Claude) ── */
-    function latexToHtml(src) {
-      if (!window.katex || !src) return `<pre style="white-space:pre-wrap">${src || ""}</pre>`;
+function latexToHtml(src) {
+  if (!window.katex || !src) return "<pre style=\"white-space:pre-wrap\">" + (src || "") + "</pre>";
+  function rk(m, disp) {
+    try {
+      return window.katex.renderToString(m.trim(), {
+        displayMode: disp, throwOnError: true, output: "html"
+      });
+    } catch(e) {
+      var clean = m.replace(/\\[a-zA-Z]+\{[^}]*\}/g," ")
+                   .replace(/\\[a-zA-Z]+/g," ")
+                   .replace(/[{}$&\\]/g," ")
+                   .replace(/\s+/g," ").trim();
+      return disp
+        ? '<div style=\"margin:8px 0;text-align:center;color:#555;font-style:italic\">'+clean+'</div>'
+        : '<span style=\"color:#555\">'+clean+'</span>';
+    }
+  }
+  // Regex définies en variables — évite toute confusion d'échappement
+  var RE1 = /\\\[([\s\S]+?)\\\]/g;   // \[...\] display
+  var RE2 = /\\\(([\s\S]+?)\\\)/g;   // \(...\) inline
+  var RE3 = /\$\$([\s\S]+?)\$\$/g;   // $$...$$ display
+  var RE4 = /\$([^$\r\n]+?)\$/g;     // $...$ inline
 
-      function renderKaTeX(m, display) {
-        try {
-          return window.katex.renderToString(m.trim(), { displayMode: display, throwOnError: false, strict: false });
-        } catch(e) {
-          return display ? `<div style="color:#dc2626; text-align:center;">$$${m}$$</div>` : `<span style="color:#dc2626;">$${m}$</span>`;
-        }
+  var h = src
+    .replace(RE1, function(_, m) { return "<div style=\"margin:10px 0;text-align:center\">" + rk(m, true) + "</div>"; })
+    .replace(RE2, function(_, m) { return rk(m, false); })
+    .replace(RE3, function(_, m) { return "<div style=\"margin:10px 0;text-align:center\">" + rk(m, true) + "</div>"; })
+    .replace(RE4, function(_, m) { return rk(m, false); });
+
+  h = h
+    .replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, "<div style=\"text-align:center\">$1</div>")
+    .replace(/\\textbf\{([^}]+)\}/g, "<strong>$1</strong>")
+    .replace(/\\textit\{([^}]+)\}/g, "<em>$1</em>")
+    .replace(/\{\\Large\\textbf\{([^}]+)\}\}/g, "<h1 style=\"font-size:16pt;text-align:center;margin:12px 0\">$1</h1>")
+    .replace(/\\section\*?\{([^}]+)\}/g, "<h2 style=\"font-size:13pt;margin:16px 0 8px;font-weight:bold\">$1</h2>")
+    .replace(/\\subsection\*?\{([^}]+)\}/g, "<h3 style=\"font-size:12pt;margin:12px 0 6px;font-weight:bold\">$1</h3>")
+    .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, function(_, b) {
+      return "<ol style=\"padding-left:24px;margin:8px 0\">" + b.replace(/\\item\s+/g, "<li>").replace(/<li>([^<]*)/g, "<li>$1</li>") + "</ol>";
+    })
+    .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, function(_, b) {
+      return "<ul style=\"padding-left:24px;margin:8px 0\">" + b.replace(/\\item\s+/g, "<li>").replace(/<li>([^<]*)/g, "<li>$1</li>") + "</ul>";
+    })
+    .replace(/\\hfill/g, "<span style=\"float:right\">")
+    .replace(/\\\\(\[[\d.]+pt\])?/g, "<br/>")
+    .replace(/\\vspace\{[^}]+\}/g, "<div style=\"height:8px\"></div>")
+    .replace(/\\newline/g, "<br/>")
+    .replace(/\\hline/g, "")
+    .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, "$1")
+    .replace(/\\[a-zA-Z]+/g, "")
+    .replace(/\n{2,}/g, "<br/><br/>")  // double saut = séparation visuelle
+    .replace(/\n/g, "<br/>");           // saut simple = retour à la ligne
+  return "<div style=\"margin:0\">" + h + "</div>";
+}
+
+/* ══ Prompt de correction adaptatif (manuscrit + tapé, pleine qualité) ══ */
+const DEFAULT_CORR_SYS = "Professeur de maths lycée. Formules display : $$formule$$. Inline : $formule$. Tableaux : $$\\begin{array}{...}...\\end{array}$$. Structure : \\section*{titre} \\begin{enumerate} \\item. Retourne UNIQUEMENT le LaTeX du corrigé (sans \\documentclass).";
+
+const DEFAULT_PROMPT = `Correcteur maths lycée, pédagogue et bienveillant.
+
+LECTURE : Si copie manuscrite/ambiguë → champ "transcription" décrivant l'interprétation ; sinon null. Symbole ambigu → contexte suivant ; résultat correct → démarche valorisée ; rature+correction → compétence. Bénéfice du doute systématique.
+
+NOTATION : valorise démarche (méthode correcte + erreur calcul = majorité des points) ; valorise débuts de recherche ; jamais 0/20 ; indulgent sur rédaction, exigeant sur logique.
+
+RÉDACTION : tutoie l'élève (prénom seul) ; sandwich (positif → critique → encouragement) ; conseil concret. Dans appreciation et conseil : français courant, pas de LaTeX. Dans remarque : LaTeX ($...$ inline, $$...$$ display) pour les formules ; commence chaque phrase ou formule sur une nouvelle ligne avec \\n ; dans le JSON double tous les antislashs (\\\\frac{}{}, \\\\sum, \\\\theta, \\\\sin pas \\frac, \\sum).
+
+FORMAT : JSON valide uniquement, sans \`\`\`json.
+[{"name":"Prénom Nom","note":14,"appreciation":"...","details":[{"exercice":"Exercice 1","transcription":null,"obtenu":"3.5","sur":"5","remarque":"..."}],"conseil":"..."}]`;
+
+/* ══ Micro-composants ═════════════════════════════════════════════ */
+function Card({ children, style }) {
+  return React.createElement("div", {
+    style: Object.assign({ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"1.25rem", marginBottom:"1rem" }, style || {})
+  }, children);
+}
+function Field({ label, children }) {
+  return React.createElement("div", { style:{ marginBottom:4 } },
+    React.createElement("span", { style:{ display:"block", fontSize:13, color:"#6b7280", marginBottom:6 } }, label),
+    children
+  );
+}
+function DropZone({ id, multiple, loaded, name, onFiles, label, sub }) {
+  var handle = function(files) { if (files && files.length) onFiles(files); };
+  return (
+    <div
+      onDragOver={function(e){e.preventDefault();}}
+      onDrop={function(e){e.preventDefault();handle(e.dataTransfer.files);}}
+      onClick={function(){document.getElementById(id).click();}}
+      style={{border:"1.5px dashed #d1d5db",borderRadius:8,padding:"1.2rem",textAlign:"center",cursor:"pointer",background:loaded?"#f0fdf4":"#f9fafb",marginBottom:8}}
+    >
+      <input id={id} type="file" accept="application/pdf" multiple={multiple} style={{display:"none"}} onChange={function(e){handle(e.target.files);}}/>
+      {loaded
+        ? <span style={{color:"#16a34a",fontWeight:500}}>✓ {name}</span>
+        : <span style={{color:"#6b7280",fontSize:13}}>{label}<br/><span style={{fontSize:11}}>{sub}</span></span>
       }
+    </div>
+  );
+}
+function Bdg({ color, children }) {
+  var m = { success:["#dcfce7","#16a34a"], danger:["#fee2e2","#dc2626"], info:["#dbeafe","#1d4ed8"] };
+  var pair = m[color] || m.info;
+  return <span style={{fontSize:11,fontWeight:500,padding:"3px 10px",borderRadius:6,background:pair[0],color:pair[1]}}>{children}</span>;
+}
 
-      // 1. Sauvetage des Tableaux
-      let html = src.replace(/\\begin\{tabular\}(\{[^}]*\})?/g, '\\begin{array}$1')
-                    .replace(/\\end\{tabular\}/g, '\\end{array}');
-
-      // 2. Conversion mathématique directe (sans placeholders temporaires fragiles)
-      const RE_DISPLAY_1 = /\\\[([\s\S]+?)\\\]/g;
-      const RE_DISPLAY_2 = /\$\$([\s\S]+?)\$\$/g;
-      const RE_INLINE_1  = /\\\(([\s\S]+?)\\\)/g;
-      const RE_INLINE_2  = /\$([^\$\n]+?)\$/g; // Sécurité contre les sauts de lignes accidentels dans inline
-
-      html = html
-        .replace(RE_DISPLAY_1, (_, m) => `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${renderKaTeX(m, true)}</div>`)
-        .replace(RE_DISPLAY_2, (_, m) => `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${renderKaTeX(m, true)}</div>`)
-        .replace(RE_INLINE_1, (_, m) => renderKaTeX(m, false))
-        .replace(RE_INLINE_2, (_, m) => renderKaTeX(m, false));
-
-      // 3. Application du formatage texte (Markdown)
-      html = html
-        .replace(/\\textbf\{([^}]+)\}/g, "<strong>$1</strong>")
-        .replace(/\\textit\{([^}]+)\}/g, "<em>$1</em>")
-        .replace(/\\underline\{([^}]+)\}/g, "<u>$1</u>")
-        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:24px; margin-bottom:12px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
-        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:16px; margin-bottom:8px;">$1</h3>')
-        .replace(/\\subsubsection\*?\{([^}]+)\}/g, '<h4 style="font-size:12pt; color:#4b5563; margin-top:12px; margin-bottom:4px;">$1</h4>')
-        .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, b) => `<ol style="padding-left:24px; margin:8px 0;">${b.replace(/\\item\s+/g, "<li>").replace(/<li>([^<]*)/g, "<li>$1</li>")}</ol>`)
-        .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, b) => `<ul style="padding-left:24px; margin:8px 0;">${b.replace(/\\item\s+/g, "<li>").replace(/<li>([^<]*)/g, "<li>$1</li>")}</ul>`)
-        .replace(/\\newline/g, "<br/>")
-        .replace(/\\\\(\[[\d.]+pt\])?/g, "<br/>")
-        .replace(/\n\n/g, '</p><p style="margin:8px 0; line-height:1.7;">')
-        .replace(/\n/g, "<br/>");
-
-      return `<p style="margin:8px 0; line-height:1.7;">${html}</p>`;
-    }
-
-    function Card({ children }) { return <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"1.25rem", marginBottom:"1rem", boxShadow:"0 1px 2px rgba(0,0,0,0.05)" }}>{children}</div>; }
-    function Field({ label, children }) { return <div style={{ marginBottom:12 }}><span style={{ display:"block", fontSize:13, fontWeight:500, color:"#374151", marginBottom:6 }}>{label}</span>{children}</div>; }
-    function SectionHead({ title, right }) { return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}><span style={{ fontSize:15, fontWeight:600 }}>{title}</span>{right}</div>; }
-
-    function SessionManager({ onSelect }) {
-      const [sessions, setSessions] = useState(() => getAllSessions());
-      const [newName,  setNewName]  = useState("");
-      const refresh = () => setSessions(getAllSessions());
-
-      const create = () => {
-        const name = newName.trim() || "Devoir du " + new Date().toLocaleDateString("fr-FR");
-        const id = newSessionId();
-        saveSession(id, { name, createdAt: Date.now() });
-        setNewName(""); refresh(); onSelect(id, name);
-      };
-
-      const entries = Object.entries(sessions).sort((a,b) => (b[1].createdAt||0)-(a[1].createdAt||0));
-      return (
-        <div style={{ maxWidth:700, margin:"0 auto", padding:"2rem 1rem" }}>
-          <h1 style={{ marginBottom:8 }}>📐 Gestionnaire de devoirs (Gemini)</h1>
-          <p style={{ fontSize:14, color:"#6b7280", marginBottom:"2rem" }}>Un outil optimisé pour les enseignants en mathématiques.</p>
-
-          <Card>
-            <div style={{ fontSize:15, fontWeight:600, marginBottom:12 }}>➕ Nouveau devoir</div>
-            <div style={{ display:"flex", gap:10 }}>
-              <input type="text" value={newName} onChange={e=>setNewName(e.target.value)} placeholder="Ex : Contrôle Fonctions - 1ère Spé" onKeyDown={e=>e.key==="Enter"&&create()} style={{ flex:1, padding:"10px 14px" }}/>
-              <button onClick={create} style={{ flexShrink:0, background:"#16a34a", padding:"0 20px" }}>Créer</button>
-            </div>
-          </Card>
-
-          {entries.length > 0 && (
-            <Card>
-              <div style={{ fontSize:15, fontWeight:600, marginBottom:12 }}>📂 Devoirs récents</div>
-              {entries.map(([id, s]) => (
-                <div key={id} onClick={()=>onSelect(id, s.name)} style={{
-                  display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 14px", marginBottom:8, borderRadius:8, cursor:"pointer", background:"#f9fafb", border:"1px solid #e5e7eb", transition:"all 0.2s",
-                }} onMouseEnter={e=>{e.currentTarget.style.background="#f3f4f6"; e.currentTarget.style.borderColor="#d1d5db";}} onMouseLeave={e=>{e.currentTarget.style.background="#f9fafb"; e.currentTarget.style.borderColor="#e5e7eb";}}>
-                  <div>
-                    <div style={{ fontWeight:600, fontSize:14, color:"#111827" }}>{s.name}</div>
-                    <div style={{ fontSize:12, color:"#6b7280", marginTop:4 }}>
-                      Créé le {s.createdAt ? new Date(s.createdAt).toLocaleDateString("fr-FR") : ""}
-                      {s.corrections?.length > 0 ? ` • ${s.corrections.filter(c=>!c.skipped).length} copies traitées` : ""}
-                    </div>
-                  </div>
-                  <div style={{ display:"flex", gap:12, alignItems:"center" }}>
-                    <span style={{ fontSize:13, color:"#1d4ed8", fontWeight:600 }}>Ouvrir →</span>
-                    <span onClick={e=>{e.stopPropagation(); if(window.confirm("Supprimer ce devoir ?")) { deleteSession(id); refresh(); }}} style={{ fontSize:14, color:"#9ca3af", padding:"4px 8px" }}>✕</span>
+/* ══ SessionManager ═══════════════════════════════════════════════ */
+function SessionManager({ onSelect }) {
+  var [sessions, setSessions] = useState(function() { return getSessions(); });
+  var [name, setName] = useState("");
+  function refresh() { setSessions(getSessions()); }
+  function create() {
+    var n = name.trim() || "Devoir du " + new Date().toLocaleDateString("fr-FR");
+    var id = newId();
+    saveSession(id, { name: n, createdAt: Date.now() });
+    setName(""); refresh(); onSelect(id, n);
+  }
+  var entries = Object.entries(sessions).sort(function(a,b){ return (b[1].createdAt||0)-(a[1].createdAt||0); });
+  var lastId = getActive();
+  var last   = lastId && sessions[lastId] ? sessions[lastId] : null;
+  return (
+    <div style={{maxWidth:700,margin:"0 auto",padding:"2rem 1rem"}}>
+      <h1 style={{marginBottom:8,fontSize:20}}>📐 Gestionnaire de devoirs</h1>
+      <p style={{fontSize:13,color:"#6b7280",marginBottom:"1.5rem"}}>Chaque devoir est indépendant — ouvrez-en plusieurs dans des onglets différents.</p>
+      {last && (
+        <div style={{background:"#dbeafe",border:"0.5px solid #93c5fd",borderRadius:10,padding:"14px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:12,color:"#1d4ed8",marginBottom:2}}>Dernier devoir ouvert</div>
+            <div style={{fontWeight:500}}>{last.name}</div>
+          </div>
+          <button onClick={function(){onSelect(lastId,last.name);}} style={{background:"#1d4ed8",border:"none",flexShrink:0}}>Reprendre →</button>
+        </div>
+      )}
+      <Card>
+        <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>➕ Nouveau devoir</div>
+        <div style={{display:"flex",gap:8}}>
+          <input type="text" value={name} onChange={function(e){setName(e.target.value);}} placeholder="Ex : Terminale – Suites – Jan 2025" onKeyDown={function(e){if(e.key==="Enter")create();}} style={{flex:1}}/>
+          <button onClick={create} style={{flexShrink:0}}>Créer</button>
+        </div>
+      </Card>
+      {entries.length > 0 && (
+        <Card>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>📂 Devoirs existants</div>
+          {entries.map(function([id,s]) {
+            return (
+              <div key={id} onClick={function(){onSelect(id,s.name);}}
+                style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",marginBottom:6,borderRadius:8,cursor:"pointer",background:"#f3f4f6",border:"0.5px solid #e5e7eb"}}
+                onMouseEnter={function(e){e.currentTarget.style.background="#e5e7eb";}}
+                onMouseLeave={function(e){e.currentTarget.style.background="#f3f4f6";}}>
+                <div>
+                  <div style={{fontWeight:500,fontSize:14}}>{s.name}</div>
+                  <div style={{fontSize:11,color:"#9ca3af"}}>
+                    {s.createdAt ? new Date(s.createdAt).toLocaleDateString("fr-FR",{day:"2-digit",month:"short",year:"numeric"}) : ""}
+                    {s.step > 0 ? " — Étape " + (s.step+1) + "/4" : ""}
+                    {s.corrections && s.corrections.filter(function(c){return !c.skipped;}).length > 0 ? " — " + s.corrections.filter(function(c){return !c.skipped;}).length + " corrigée(s)" : ""}
                   </div>
                 </div>
-              ))}
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <span style={{fontSize:12,color:"#1d4ed8",fontWeight:500}}>Ouvrir →</span>
+                  <span onClick={function(e){e.stopPropagation();if(window.confirm("Supprimer ce devoir ?"))delSession(id),refresh();}} style={{fontSize:12,color:"#dc2626",cursor:"pointer",padding:"2px 6px"}}>✕</span>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+      {entries.length === 0 && <p style={{textAlign:"center",color:"#9ca3af",fontSize:13,marginTop:"2rem"}}>Aucun devoir — créez-en un ci-dessus.</p>}
+    </div>
+  );
+}
+
+/* ══ App Router ═══════════════════════════════════════════════════ */
+function App() {
+  var [sid,   setSid]   = useState(null);
+  var [sname, setSname] = useState("");
+  function open(id, name) { setActive(id); setSid(id); setSname(name); }
+  if (!sid) return <SessionManager onSelect={open}/>;
+  return <Devoir sid={sid} sname={sname} onBack={function(){ setSid(null); setSname(""); }}/>;
+}
+
+/* ══ Devoir ═══════════════════════════════════════════════════════ */
+function Devoir({ sid, sname, onBack }) {
+
+  // Persist helpers
+  function ld(k, fb) { var s = getSession(sid); return s[k] !== undefined ? s[k] : fb; }
+  function ps(k, v)  { var all = getSessions(); var s = all[sid] || {}; s[k] = v; saveSession(sid, s); }
+
+  // Clé API (partagée entre sessions)
+  var [apiKey, setApiKeyR] = useState(function() { 
+    try { 
+      var stored = localStorage.getItem("pf_apikey");
+      // Valeur par défaut fournie par l'utilisateur (Attention à ne pas publier ce fichier !)
+      return stored || "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y"; 
+    } catch(e) { return "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y"; } 
+  });
+  function setApiKey(v) { setApiKeyR(v); try { localStorage.setItem("pf_apikey", v); } catch(e) {} }
+
+  var [step,   setStepR]   = useState(function() { return ld("step", 0); });
+  function setStep(v) { setStepR(v); ps("step", v); }
+
+  var [busy,   setBusy]    = useState(false);
+  var [status, setStatus]  = useState("");
+  var previewRef = useRef(null);
+
+  // Étape 0 – Sujet
+  // Mode toujours "upload" (génération supprimée)
+  var subjectMode = "upload";
+  var [consignes,   setConsignesR]   = useState(function() { return ld("consignes",""); });
+  function setConsignes(v) { setConsignesR(v); ps("consignes",v); }
+  var [latex,       setLatexR]       = useState(function() { return ld("latex",""); });
+  function setLatex(v) { setLatexR(v); ps("latex",v); }
+  var [corrRef,     setCorrRefR]     = useState(function() { return ld("corrRef",""); });
+  function setCorrRef(v) { setCorrRefR(v); ps("corrRef",v); }
+  var [upSubName,   setUpSubNameR]   = useState(function() { return ld("upSubName",""); });
+  function setUpSubName(v) { setUpSubNameR(v); ps("upSubName",v); }
+  var [upSubPdf,    setUpSubPdf]     = useState(null); // binaire non persisté
+
+  // Étape 1 – Diffusion
+  var [students,    setStudentsR]    = useState(function() { return ld("students",""); });
+  function setStudents(v) { setStudentsR(v); ps("students",v); }
+  var [extracting,  setExtracting]   = useState(false);
+  var [copies,      setCopies]       = useState([]);   // [{name,b64}] non persisté
+  var namesExtracted = useRef(false);
+
+  // Étape 2 – Correction
+  var [corrPrompt,  setCorrPromptR]  = useState(function() { return ld("corrPrompt", DEFAULT_PROMPT); });
+  function setCorrPrompt(v) { setCorrPromptR(v); ps("corrPrompt",v); }
+  var [showPrompt,  setShowPrompt]   = useState(false);
+  var [corrEditInstr, setCorrEditInstr] = useState("");
+  var [corrEditBusy, setCorrEditBusy] = useState(false);
+  var [answers,     setAnswersR]     = useState(function() { return ld("answers",{}); });
+  function setAnswers(v) { setAnswersR(v); ps("answers",v); }
+  var [corrections, setCorrectionsR] = useState(function() { return ld("corrections",[]); });
+  function setCorrections(v) { setCorrectionsR(v); ps("corrections",v); }
+
+  // Étape 3 – Résultats
+  var [mailsDone,   setMailsDoneR]   = useState(function() { return ld("mailsDone",false); });
+  function setMailsDone(v) { setMailsDoneR(v); ps("mailsDone",v); }
+  var [resending,   setResending]    = useState(null);
+  var [corrRefLoading, setCorrRefLoading] = useState(false);
+  var [progress,    setProgress]     = useState(null); // {current, total, label}
+  // Invalider le cache image si on recommence une correction
+  function resetCorrections() {
+    setCorrections([]);
+  }
+
+  // Dérivés
+  var parsedStudents = students.trim().split("\n").filter(Boolean).map(function(line, i) {
+    var parts = line.split(",").map(function(s){ return s.trim(); });
+    return { id: i, name: parts[0] || ("Élève " + (i+1)), email: parts[1] || "" };
+  });
+  var validCorrs = corrections.filter(function(c) { return !c.skipped; });
+  var avg = validCorrs.filter(function(c) { return !isNaN(+c.note); })
+    .reduce(function(a, c, _, arr) { return a + (+c.note) / arr.length; }, 0);
+
+  var canNext = [
+    !!upSubPdf,
+    true,
+    corrections.length > 0,
+    true
+  ][step];
+
+
+  /* ── Lire un fichier → base64 ── */
+  function readFile(file) {
+    return new Promise(function(res) {
+      var r = new FileReader();
+      r.onload = function(e) { res(e.target.result.split(",")[1]); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  /* ── Extraire les noms depuis PDF ── */
+  async function extractNames(b64) {
+    if (!b64 || !apiKey) return;
+    setExtracting(true);
+    try {
+      var raw = await callGemini(apiKey, [{
+        role: "user",
+        content: [
+          { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
+          { type: "text", text: "Extrais le nom complet et l'email de chaque élève depuis ces copies (qui peuvent être manuscrites ou tapées).\nSi l'écriture est manuscrite ou difficile à lire, fais de ton mieux pour déchiffrer.\nJSON uniquement, sans backticks :\n[{\"name\":\"Prénom Nom\",\"email\":\"...\"}]\nSi pas d'email visible, mets \"\"." }
+        ]
+      }], "Tu extrais des noms d'élèves. JSON uniquement.");
+      var arr = safeJsonParse(raw);
+      setStudents(arr.map(function(s) { return s.email ? s.name + ", " + s.email : s.name; }).join("\n"));
+    } catch(e) { console.warn("Extraction noms:", e); }
+    setExtracting(false);
+  }
+
+  /* ── Ajouter copies PDF ── */
+  async function addCopies(files) {
+    var arr = Array.from(files).filter(function(f) { return f.type === "application/pdf"; });
+    for (var i = 0; i < arr.length; i++) {
+      var file = arr[i];                    // Capturer la référence avant l'await
+      var b64  = await readFile(file);
+      var fname = file.name;               // Capturer le nom avant la closure
+      setCopies(function(prev) { return prev.concat([{ name: fname, b64: b64 }]); });
+      if (!namesExtracted.current) { namesExtracted.current = true; extractNames(b64); }
+    }
+    if (!corrRef && !corrRefLoading) buildCorrRef();
+  }
+
+  /* ── Générer sujet LaTeX ── */
+  async function generateSubject() {
+    if (!consignes.trim() || !apiKey) return;
+    setBusy(true); setStatus("Génération du sujet…");
+    try {
+      var res = await callGemini(apiKey, [{
+        role: "user",
+        content: "Génère un sujet de mathématiques en LaTeX selon ces consignes :\n" + consignes +
+          "\n\nRetourne UNIQUEMENT le contenu LaTeX (sans \\documentclass), puis ---CORRECTION--- :\n\n" +
+          "\\begin{center}{\\Large\\textbf{Devoir de mathématiques}}\\\\[4pt]{\\normalsize [Niveau] \\hfill Durée : 1h}\\end{center}\n" +
+          "\\vspace{8pt}\\section*{Exercice 1 --- [titre] \\hfill (X pts)}\n" +
+          "\\begin{enumerate}\\item Énoncé avec $f(x)=...$\\end{enumerate}\n\n" +
+          "---CORRECTION---\n\\section*{Corrigé Exercice 1}\n..."
+      }], "Professeur de maths lycée français. LaTeX rigoureux pour toutes les formules mathématiques.");
+      var sep = res.indexOf("---CORRECTION---");
+      setLatex(sep > 0 ? res.slice(0, sep).trim() : res);
+      setCorrRef(sep > 0 ? res.slice(sep + 16).trim() : "");
+    } catch(e) { setStatus("Erreur : " + e.message); }
+    finally { setBusy(false); }
+  }
+
+  /* ── Charger html2canvas à la demande ── */
+  function loadH2C() {
+    return new Promise(function(res, rej) {
+      if (window.html2canvas) { res(); return; }
+      var s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  /* ── Télécharger sujet en PDF ── */
+  async function downloadSubjectPdf() {
+    if (!previewRef.current || !window.jspdf) return;
+    setBusy(true); setStatus("Génération du PDF…");
+    try {
+      await loadH2C();
+      var el = previewRef.current;
+      var canvas = await window.html2canvas(el, { scale:2, useCORS:true, backgroundColor:"#ffffff", logging:false });
+      var jsPDF = window.jspdf.jsPDF;
+      var pdf = new jsPDF({ orientation:"portrait", unit:"mm", format:"a4" });
+      var W = pdf.internal.pageSize.getWidth(), H = pdf.internal.pageSize.getHeight(), m = 15;
+      var iw = W - m*2, remaining = (canvas.height * iw) / canvas.width, srcY = 0;
+      while (remaining > 0) {
+        var sliceH = Math.min(remaining, H - m*2);
+        var sc = document.createElement("canvas");
+        var ratio = canvas.width / iw;
+        sc.width = canvas.width; sc.height = sliceH * ratio;
+        sc.getContext("2d").drawImage(canvas, 0, srcY*ratio, canvas.width, sliceH*ratio, 0, 0, canvas.width, sliceH*ratio);
+        if (srcY > 0) pdf.addPage();
+        pdf.addImage(sc.toDataURL("image/png"), "PNG", m, m, iw, sliceH);
+        srcY += sliceH; remaining -= sliceH;
+      }
+      pdf.save("sujet_maths.pdf");
+    } catch(e) { setStatus("❌ PDF : " + e.message); }
+    finally { setBusy(false); }
+  }
+
+  /* ── pdf-lib chargé dynamiquement ── */
+  function loadPdfLib() {
+    return new Promise(function(res,rej){
+      if(window.PDFLib){res(window.PDFLib);return;}
+      var s=document.createElement("script");
+      s.src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
+      s.onload=function(){res(window.PDFLib);}; s.onerror=rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  /* ── Phase 1 : repérage pages (1 requête légère) ── */
+  async function detectPageRanges(pdfB64, names) {
+    var raw = await callGemini(apiKey,[{role:"user",content:[
+      {type:"document",source:{type:"base64",media_type:"application/pdf",data:pdfB64}},
+      {type:"text",text:"Élèves :\n"+names.join("\n")+
+        "\n\nDis-moi à quelle page commence et finit chaque copie."+
+        "\nJSON uniquement :\n[{\"name\":\"Prenom Nom\",\"pageStart\":1,\"pageEnd\":2}]"}
+    ]}],"Analyse PDF. JSON uniquement, compact.");
+    return safeJsonParse(raw);
+  }
+
+  /* ── Phase 2 : découpage local (aucune requête) ── */
+  async function extractStudentPdf(PDFLib,fullB64,pageStart,pageEnd){
+    var src=new Uint8Array(atob(fullB64).split("").map(function(c){return c.charCodeAt(0);}));
+    var srcDoc=await PDFLib.PDFDocument.load(src);
+    var newDoc=await PDFLib.PDFDocument.create();
+    var idx=[];for(var i=pageStart-1;i<pageEnd;i++)idx.push(i);
+    var pages=await newDoc.copyPages(srcDoc,idx);
+    pages.forEach(function(p){newDoc.addPage(p);});
+    var bytes=await newDoc.save();
+    var bin="",chunk=8192;
+    for(var j=0;j<bytes.length;j+=chunk)
+      bin+=String.fromCharCode.apply(null,bytes.subarray(j,j+chunk));
+    return btoa(bin);
+  }
+
+  /* ── Phase 3 : correction individuelle (PDF 2 pages) ── */
+  async function correctOnePdf(studentB64,name,corrRefText){
+    var blocks=[];
+    // Si on a le corrigé en texte, on l'envoie à la place du PDF sujet (économie tokens majeure)
+    if(corrRefText){
+      blocks.push({type:"text",text:"CORRIGÉ DE RÉFÉRENCE (barème) :\n"+corrRefText});
+    } else if(upSubPdf){
+      blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:upSubPdf}});
+    }
+    blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:studentB64}});
+    blocks.push({type:"text",text:"Élève : "+name+". Corrige UNIQUEMENT cette copie. 1 objet JSON."});
+    var raw=await callGemini(apiKey,[{role:"user",content:blocks}],corrPrompt);
+    var p=safeJsonParse(raw);
+    return Array.isArray(p)?p[0]:p;
+  }
+
+  /* ── Fallback : correction par lots ── */
+  async function correctByLots(copyList,corrRefText){
+    var results=[],LOT_SIZE=10,totalLots=Math.ceil(copyList.length/LOT_SIZE);
+    for(var lot=0;lot<totalLots;lot++){
+      var lotS=lot*LOT_SIZE,lotE=Math.min(lotS+LOT_SIZE,copyList.length);
+      if(totalLots>1) setStatus("Lot "+(lot+1)+"/"+totalLots+" — copies "+(lotS+1)+" à "+lotE+"…");
+      for(var i=lotS;i<lotE;i++){
+        setStatus("Correction "+(i+1)+"/"+copyList.length+"…");
+        var blocks=[];
+        if(corrRefText){
+          blocks.push({type:"text",text:"CORRIGÉ DE RÉFÉRENCE :\n"+corrRefText});
+        } else if(upSubPdf){
+          blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:upSubPdf}});
+        }
+        blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:copyList[i].b64}});
+        blocks.push({type:"text",text:
+          "Copies attendues :\n"+parsedStudents.map(function(s){return "- "+s.name;}).join("\n")+
+          "\nIdentifie la copie et ses pages. JSON uniquement."
+        });
+        var raw=await callGemini(apiKey,[{role:"user",content:blocks}],corrPrompt);
+        results=results.concat(safeJsonParse(raw));
+      }
+    }
+    return results;
+  }
+
+  /* ── Correction depuis PDF ── */
+  async function correctFromPdf() {
+    if(!copies.length||!apiKey)return;
+    setBusy(true);
+    try {
+      // Étape 0 : générer le corrigé de référence EN PREMIER (évite d'envoyer le PDF sujet à chaque copie)
+      var activeCorrRef = corrRef;
+      if(!activeCorrRef && upSubPdf){
+        setStatus("Génération du corrigé de référence (1 seul appel)…");
+        try{
+          var sysR = await callGemini(apiKey,
+            [{role:"user",content:[
+              {type:"document",source:{type:"base64",media_type:"application/pdf",data:upSubPdf}},
+              {type:"text",text:"Génère le corrigé complet et détaillé en LaTeX. Exercice par exercice, toutes les étapes, toutes les formules."}
+            ]}],
+            DEFAULT_CORR_SYS
+          );
+          activeCorrRef = sysR.trim();
+          setCorrRef(activeCorrRef);
+        }catch(e){ console.warn("Corrigé ref échoué, on continue sans:",e); }
+      }
+
+      var allResults=[];
+      if(copies.length===1){
+        setStatus("Repérage des copies dans le PDF…");
+        var pageRanges=null;
+        try{ pageRanges=await detectPageRanges(copies[0].b64,parsedStudents.map(function(s){return s.name;})); }
+        catch(e){ console.warn("Repérage échoué:",e); }
+        if(pageRanges&&pageRanges.length>0){
+          var PDFLib=null;
+          try{ PDFLib=await loadPdfLib(); }catch(e){ console.warn("pdf-lib indispo:",e); }
+          if(PDFLib){
+            for(var i=0;i<pageRanges.length;i++){
+              var pr=pageRanges[i];
+              setProgress({current:i+1,total:pageRanges.length,label:pr.name.split(" ")[0]});
+              try{
+                var sp=await extractStudentPdf(PDFLib,copies[0].b64,pr.pageStart,pr.pageEnd);
+                var r=await correctOnePdf(sp,pr.name,activeCorrRef);
+                if(r)allResults.push(r);
+              }catch(e){ console.warn("Erreur "+pr.name,e); }
+            }
+            setProgress(null);
+          } else { allResults=await correctByLots(copies,activeCorrRef); }
+        } else { allResults=await correctByLots(copies,activeCorrRef); }
+      } else { allResults=await correctByLots(copies,activeCorrRef); }
+      setCorrections(parsedStudents.map(function(s){
+        var found=allResults.find(function(r){return r.name&&r.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase());});
+        return found?Object.assign({},s,found):Object.assign({},s,{skipped:true});
+      }));
+    }catch(e){setStatus("❌ "+e.message);console.error("correctFromPdf:",e);}
+    finally{setBusy(false);setProgress(null);}
+  }
+
+  /* ── Correction manuelle ── */
+  async function correctAll() {
+    if (!apiKey) return;
+    setBusy(true);
+    var results = [];
+    try {
+      for (var i = 0; i < parsedStudents.length; i++) {
+        var s = parsedStudents[i];
+        var ans = (answers[s.id] || "").trim();
+        if (!ans) { results.push(Object.assign({}, s, { skipped:true })); continue; }
+        setStatus("Correction de " + s.name + "…");
+        try {
+          var raw = await callGemini(apiKey, [{
+            role: "user",
+            content: "Corrige cette copie.\nSUJET:\n" + latex +
+              "\nCORRIGÉ:\n" + (corrRef || "[utilise tes connaissances]") +
+              "\nCOPIE DE " + s.name + " (prénom: " + s.name.split(" ")[0] + "):\n" + ans +
+              "\nJSON uniquement :\n{\"note\":14,\"appreciation\":\"...\",\"details\":[{\"exercice\":\"Ex 1\",\"obtenu\":\"7\",\"sur\":\"10\",\"remarque\":\"...\"}],\"conseil\":\"...\"}"
+          }], corrPrompt);
+          var parsed = safeJsonParse(raw);
+          var obj = Array.isArray(parsed) ? parsed[0] : parsed;
+          results.push(Object.assign({}, s, obj));
+        } catch(e) { results.push(Object.assign({}, s, { note:"?", appreciation:"Erreur.", details:[], conseil:"" })); }
+      }
+      setCorrections(results);
+    } finally { setBusy(false); }
+    // Générer le corrigé LaTeX si absent
+    await buildCorrRef();
+  }
+
+  /* ── Copie en retard ── */
+  async function addLate(file) {
+    if (!file || !apiKey) return;
+    setBusy(true); setStatus("Correction en cours…");
+    try {
+      var b64 = await readFile(file);
+      var blocks = [];
+      // Utilise le corrigé texte si disponible (économie tokens), sinon le PDF sujet
+      if (corrRef) {
+        blocks.push({ type:"text", text:"CORRIGÉ DE RÉFÉRENCE :\n" + corrRef });
+      } else if (upSubPdf) {
+        blocks.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:upSubPdf } });
+      }
+      blocks.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:b64 } });
+      blocks.push({ type:"text", text:"Copie en retard. JSON uniquement." });
+      var raw = await callGemini(apiKey, [{ role:"user", content:blocks }], corrPrompt);
+      var arr = safeJsonParse(raw);
+      if (arr.length > 0) {
+        var r = arr[0];
+        var existing = parsedStudents.find(function(s) {
+          return r.name && s.name.toLowerCase().includes(r.name.split(" ")[0].toLowerCase());
+        });
+        setCorrections(function(prev) {
+          return prev.concat([Object.assign({}, existing || { id: Date.now(), name: r.name, email: "" }, r)]);
+        });
+      }
+    } catch(e) { setStatus("❌ " + e.message); }
+    finally { setBusy(false); }
+  }
+
+  /* ── Générer le corrigé LaTeX depuis le sujet PDF (1 seul appel) ── */
+  async function buildCorrRef() {
+    if (corrRef || corrRefLoading) return;
+    if (!apiKey || !upSubPdf) return;
+    setCorrRefLoading(true);
+    setStatus("Génération du corrigé en LaTeX…");
+    try {
+      var raw = await callGemini(apiKey,
+        [{ role:"user", content:[
+          { type:"document", source:{ type:"base64", media_type:"application/pdf", data:upSubPdf } },
+          { type:"text", text:"Génère le corrigé complet et détaillé en LaTeX. Exercice par exercice, toutes les étapes, toutes les formules." }
+        ]}],
+        DEFAULT_CORR_SYS
+      );
+      setCorrRef(raw.trim());
+    } catch(e) { console.warn("buildCorrRef:", e); }
+    finally { setCorrRefLoading(false); setStatus(""); }
+  }
+
+
+  /* ── Appliquer les consignes de modification du corrigé ── */
+  async function applyEditInstr() {
+    var instr = (corrEditInstr || "").trim();
+    if (!instr || !corrRef || !apiKey) return;
+    setBusy(true); setCorrEditBusy(true);
+    setStatus("Modification du corrigé…");
+    try {
+      var raw = await callGemini(apiKey,
+        [{ role:"user", content:
+          "Voici le corrigé actuel en LaTeX :\n\n" + corrRef +
+          "\n\nModifie-le selon ces consignes : " + instr +
+          "\n\nRetourne le corrigé complet modifié en LaTeX."
+        }],
+        DEFAULT_CORR_SYS
+      );
+      setCorrRef(raw.trim());
+      setCorrEditInstr("");
+    } catch(e) { setStatus("❌ " + e.message); }
+    finally { setBusy(false); setCorrEditBusy(false); setStatus(""); }
+  }
+
+
+  function buildMailHtml(cor, corrRefLatex) {
+    var prenom = cor.name.split(" ")[0];
+    var nc = !isNaN(+cor.note) ? (+cor.note >= 10 ? "#16a34a" : "#dc2626") : "#111";
+    var detRows = (cor.details || []).map(function(d) {
+      return "<tr><td style=\"padding:5px 8px;color:#555;border-top:1px solid #e5e7eb\">" + d.exercice + "</td>"
+        + "<td style=\"padding:5px 8px;font-weight:600;border-top:1px solid #e5e7eb;white-space:nowrap\">" + d.obtenu + "/" + d.sur + "</td>"
+        + "<td style=\"padding:5px 8px;color:#444;border-top:1px solid #e5e7eb\">" + latexToHtml(d.remarque||"") + "</td></tr>";
+    }).join("");
+    var corrHtml = corrRefLatex ? latexToHtml(corrRefLatex) : "";
+    return "<div style=\"font-family:Georgia,serif;max-width:640px;margin:0 auto;padding:24px;color:#111\">"
+      + "<h1 style=\"font-size:15pt;border-bottom:2px solid #333;padding-bottom:8px;margin-bottom:16px\">Bonjour " + prenom + ",</h1>"
+      + "<p style=\"font-size:13pt;margin-bottom:4px\">Voici ton résultat pour <strong>" + sname + "</strong>.</p>"
+      + "<p style=\"font-size:26pt;font-weight:bold;color:" + nc + ";margin:12px 0\">" + cor.note + "<span style=\"font-size:14pt;color:#555\"> / 20</span></p>"
+      + "<p style=\"color:#555;font-style:italic;margin-bottom:12px\">" + (cor.appreciation || "") + "</p>"
+      + (detRows ? "<table style=\"width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11pt\">" + detRows + "</table>" : "")
+      + (corrHtml
+        ? "<hr style=\"margin:20px 0;border:none;border-top:1px solid #e5e7eb\"/>"
+          + "<p style=\"font-weight:600;font-size:11pt;color:#374151;margin-bottom:12px\">📝 Corrigé du sujet :</p>"
+          + "<div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px 20px;line-height:1.8;font-size:12pt\">" + corrHtml + "</div>"
+        : "")
+      + "<div style=\"background:#eff6ff;border-left:3px solid #3b82f6;padding:12px 16px;margin-top:16px;border-radius:4px;font-size:11pt;color:#1e40af\">"
+      + "<strong>💡 Conseil :</strong> " + (cor.conseil || "") + "</div>"
+      + "<p style=\"margin-top:20px;color:#555;font-size:11pt\">Cordialement,<br/>F. Nocca</p></div>";
+  }
+
+  /* ── Envoyer à un élève ── */
+  async function sendOne(cor) {
+    await sendGmailHtml(cor.email, "Résultats – " + sname, buildMailHtml(cor, corrRef));
+  }
+
+  /* ── Renvoi individuel ── */
+  async function resendOne(cor) {
+    if (!cor.email || busy) return;
+    setResending(cor.id);
+    try {
+      await getGmailToken();
+      await sendOne(cor);
+    } catch(e) { alert("Erreur renvoi : " + e.message); }
+    finally { setResending(null); }
+  }
+
+  /* ── Envoyer tous les résultats ── */
+  async function sendResults() {
+    var toSend = corrections.filter(function(c) { return !c.skipped && c.email; });
+    if (!toSend.length) return;
+    setBusy(true);
+    try {
+      setStatus("Connexion Gmail…");
+      await getGmailToken();
+
+      var errors = [];
+      for (var i = 0; i < toSend.length; i++) {
+        setProgress({ current: i+1, total: toSend.length, label: toSend[i].name.split(" ")[0] });
+        try { await sendOne(toSend[i]); }
+        catch(e) { errors.push(toSend[i].name); console.error(e); }
+      }
+      setProgress(null);
+      setMailsDone(true);
+      setStatus(errors.length ? "⚠️ Échec : " + errors.join(", ") : "");
+    } catch(e) {
+      setStatus("❌ " + (e.message || String(e)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ── Export CSV ── */
+  function exportCsv() {
+    var details0 = validCorrs.length > 0 ? (validCorrs[0].details || []) : [];
+    var detH = details0.map(function(d) { return "\"" + d.exercice + " (pts)\",\"" + d.exercice + " (remarque)\""; }).join(",");
+    var header = "\"Nom\",\"Note /20\",\"Appréciation\",\"Conseil\"" + (detH ? "," + detH : "");
+    var rows = validCorrs.map(function(c) {
+      var appr = (c.appreciation || "").replace(/"/g, "'");
+      var cons = (c.conseil || "").replace(/"/g, "'");
+      var base = "\"" + c.name + "\",\"" + c.note + "\",\"" + appr + "\",\"" + cons + "\"";
+      var det = details0.map(function(_, i) {
+        var d = c.details && c.details[i];
+        return d ? "\"" + d.obtenu + "/" + d.sur + "\",\"" + (d.remarque||"").replace(/"/g,"'") + "\"" : "\"\",\"\"";
+      }).join(",");
+      return base + (det ? "," + det : "");
+    });
+    var csv = "\uFEFF" + [header].concat(rows).join("\n");
+    var a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = "corrections_" + sname.replace(/[^a-z0-9]/gi,"_") + ".csv";
+    a.click();
+  }
+
+  /* ── Export PDF récap ── */
+  function exportRecap() {
+    if (!window.jspdf) return;
+    var jsPDF = window.jspdf.jsPDF;
+    var pdf = new jsPDF({ orientation:"portrait", unit:"mm", format:"a4" });
+    var M = 15, PW = 180, LH = 6, y = M;
+    function addLine(txt, opts) {
+      opts = opts || {};
+      if (y > 270) { pdf.addPage(); y = M; }
+      pdf.setFont("helvetica", opts.bold ? "bold" : "normal");
+      pdf.setFontSize(opts.size || 10);
+      pdf.setTextColor.apply(pdf, opts.color || [0,0,0]);
+      var lines = pdf.splitTextToSize(String(txt || ""), PW);
+      pdf.text(lines, M, y);
+      y += lines.length * LH + (opts.after || 0);
+    }
+    addLine("Récapitulatif — " + sname, { bold:true, size:14, after:4 });
+    addLine("Moyenne : " + avg.toFixed(1) + "/20", { size:11, color:[80,80,80], after:6 });
+    validCorrs.forEach(function(c) {
+      if (y > 250) { pdf.addPage(); y = M; }
+      pdf.setDrawColor(200,200,200); pdf.line(M, y, M+PW, y); y += 4;
+      var col = !isNaN(+c.note) ? (+c.note >= 10 ? [22,163,74] : [220,38,38]) : [0,0,0];
+      addLine(c.name + "  —  " + c.note + "/20", { bold:true, size:12, color:col, after:2 });
+      addLine(c.appreciation || "", { size:9, color:[80,80,80], after:2 });
+      (c.details || []).forEach(function(d) {
+        addLine("• " + d.exercice + " : " + d.obtenu + "/" + d.sur + " — " + d.remarque, { size:8.5, color:[60,60,60] });
+      });
+      if (c.conseil) { y += 2; addLine("Conseil : " + c.conseil, { size:8.5, color:[80,80,180], after:4 }); }
+      else { y += 4; }
+    });
+    pdf.save("recap_" + sname.replace(/[^a-z0-9]/gi,"_") + ".pdf");
+  }
+
+
+  /* ══ RENDU ═══════════════════════════════════════════════════════ */
+  return (
+    <div style={{maxWidth:700,margin:"0 auto",padding:"1.5rem 1rem"}}>
+
+      {/* Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.5rem"}}>
+        <div>
+          <h1 style={{fontSize:16,marginBottom:2}}>📐 {sname}</h1>
+          <span style={{fontSize:12,color:"#9ca3af",cursor:"pointer"}} onClick={onBack}>← Tous les devoirs</span>
+        </div>
+        <span style={{fontSize:11,color:"#9ca3af"}}>💾 Sauvegarde auto</span>
+      </div>
+
+      {/* Clé API */}
+      <Card>
+        <Field label="🔑 Clé API Gemini">
+          <input type="password" value={apiKey} onChange={function(e){setApiKey(e.target.value);}} placeholder="AIzaSy..." style={{fontFamily:"monospace"}}/>
+        </Field>
+        {!apiKey && <p style={{fontSize:12,color:"#dc2626",marginTop:6}}>⚠️ Saisissez votre clé API pour activer l'outil.</p>}
+        {apiKey  && <p style={{fontSize:12,color:"#16a34a",marginTop:6}}>✓ Clé partagée entre tous les devoirs.</p>}
+      </Card>
+
+      {/* Stepper */}
+      <div style={{display:"flex",alignItems:"flex-start",marginBottom:"2rem"}}>
+        {STEPS.map(function(label, i) {
+          var done = i < step, active = i === step;
+          return (
+            <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+              <div style={{display:"flex",alignItems:"center",width:"100%"}}>
+                {i > 0 && <div style={{flex:1,height:"0.5px",marginTop:16,background:i<=step?"#16a34a":"#e5e7eb"}}/>}
+                <div onClick={function(){if(done)setStep(i);}} style={{
+                  width:32,height:32,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
+                  fontSize:13,fontWeight:500,flexShrink:0,cursor:done?"pointer":"default",
+                  background:done?"#dcfce7":active?"#fff":"#f3f4f6",
+                  color:done?"#16a34a":active?"#1d4ed8":"#9ca3af",
+                  border:done?"none":active?"2px solid #1d4ed8":"0.5px solid #e5e7eb"
+                }}>{done?"✓":i+1}</div>
+                {i < 3 && <div style={{flex:1,height:"0.5px",marginTop:16,background:i<step?"#16a34a":"#e5e7eb"}}/>}
+              </div>
+              <span style={{fontSize:11,textAlign:"center",color:active?"#1d4ed8":"#9ca3af",fontWeight:active?500:400}}>{label}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ═══ STEP 0 : Sujet PDF ═══ */}
+      {step === 0 && (
+        <Card>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>📄 Votre sujet en PDF</div>
+          <DropZone id="subj-pdf" multiple={false} loaded={!!upSubPdf} name={upSubName}
+            onFiles={async function(files) {
+              var f = files[0];
+              if (!f) return;
+              setUpSubName(f.name);
+              setUpSubPdf(await readFile(f));
+            }}
+            label="Glissez le PDF du sujet ici ou cliquez"
+            sub="Le sujet sera transmis à l'IA pour corriger les copies"/>
+          {upSubPdf && (
+            <p style={{fontSize:12,color:"#16a34a",marginTop:8}}>
+              ✓ Sujet chargé — passez à l'étape suivante.
+            </p>
+          )}
+        </Card>
+      )}
+
+      {/* ═══ STEP 1 : Diffusion ═══ */}
+      {step === 1 && (
+        <div>
+          <Card>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:20}}>✓</span>
+              <div>
+                <div style={{fontSize:14,fontWeight:500}}>Sujet : {upSubName}</div>
+                <div style={{fontSize:12,color:"#6b7280"}}>Transmis à l'IA pour la correction des copies.</div>
+              </div>
+            </div>
+          </Card>
+          <Card>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>👥 Liste des élèves</div>
+            <DropZone id="copies-step1" multiple={true}
+              loaded={copies.length > 0}
+              name={copies.length + " fichier(s) chargé(s)"}
+              onFiles={addCopies}
+              label="📄 Déposez le(s) PDF des copies pour extraire les noms automatiquement"
+              sub="(le PDF sera réutilisé à l'étape Correction)"/>
+            {extracting && <p style={{fontSize:12,color:"#1d4ed8",marginBottom:8,textAlign:"center"}}>🔍 Extraction des noms…</p>}
+            <Field label={copies.length > 0 ? "Noms extraits — vérifiez et complétez les emails" : "Ou saisissez manuellement — Nom Prénom, email"}>
+              <textarea value={students} onChange={function(e){setStudents(e.target.value);}}
+                placeholder={"Marie Dupont, marie.dupont@lycee.fr\nPaul Martin, paul.martin@lycee.fr"}
+                style={{minHeight:100,fontFamily:"monospace",fontSize:12}}/>
+            </Field>
+          </Card>
+        </div>
+      )}
+
+      {/* ═══ STEP 2 : Correction ═══ */}
+      {step === 2 && (
+        <div>
+          {/* Prompt éditable */}
+          {corrections.length === 0 && (
+            <Card>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:showPrompt?10:0}}>
+                <span style={{fontSize:13,color:"#6b7280"}}>🧠 Prompt de correction</span>
+                <button onClick={function(){setShowPrompt(!showPrompt);}} style={{fontSize:11,padding:"3px 10px",background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}}>
+                  {showPrompt ? "Masquer" : "Modifier"}
+                </button>
+              </div>
+              {showPrompt && (
+                <div>
+                  <textarea value={corrPrompt} onChange={function(e){setCorrPrompt(e.target.value);}}
+                    style={{width:"100%",minHeight:220,fontFamily:"monospace",fontSize:11,marginTop:8}}/>
+                  <button onClick={function(){setCorrPrompt(DEFAULT_PROMPT);}} style={{fontSize:11,padding:"3px 10px",background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db",marginTop:6}}>
+                    Remettre le prompt par défaut
+                  </button>
+                </div>
+              )}
             </Card>
           )}
-        </div>
-      );
-    }
 
-    function App() {
-      const [sessionId, setSessionId] = useState(null);
-      const [sessionName, setSessionName] = useState("");
-      if (!sessionId) return <SessionManager onSelect={(id, name) => { setActiveId(id); setSessionId(id); setSessionName(name); }}/>;
-      return <Devoir sessionId={sessionId} sessionName={sessionName} onBack={()=>{ setSessionId(null); setSessionName(""); }}/>;
-    }
-
-    function Devoir({ sessionId, sessionName, onBack }) {
-      const load = (key, fallback) => { const s=getSession(sessionId); return s[key]!==undefined?s[key]:fallback; };
-      const persist = (key, val) => { const s=getSession(sessionId); s[key]=val; saveSession(sessionId, {...getAllSessions()[sessionId],...s,[key]:val}); };
-
-      const [apiKey, setApiKey] = useState(() => { try{return localStorage.getItem("prof_maths_gemini_apikey")||"";}catch{return "";} });
-      const [modelChoice, setModelChoiceRaw] = useState(() => load("modelChoice", "gemini-2.5-flash"));
-      const [step, setStepRaw] = useState(() => load("step", 0));
-      const [busy, setBusy] = useState(false);
-      const [status, setStatus] = useState("");
-      const [progress, setProgress] = useState(0); 
-
-      useEffect(()=>{ try{localStorage.setItem("prof_maths_gemini_apikey",apiKey);}catch{} },[apiKey]);
-      const setModelChoice = v => { setModelChoiceRaw(v); persist("modelChoice", v); };
-      const setStep = v => { setStepRaw(v); persist("step",v); };
-
-      const [upSubPdf, setUpSubPdf] = useState(null);
-      const [upSubPdfName, setUpSubPdfNameRaw] = useState(() => load("upSubPdfName", ""));
-      const setUpSubPdfName = v => { setUpSubPdfNameRaw(v); persist("upSubPdfName",v); };
-
-      const [studentsRaw, setStudentsRawRaw] = useState(() => load("studentsRaw", ""));
-      const setStudentsRaw = v => { setStudentsRawRaw(v); persist("studentsRaw",v); };
-      const [copiesPdfs, setCopiesPdfsRaw] = useState([]);
-      const setCopiesPdfs = (v) => { if (typeof v === 'function') { setCopiesPdfsRaw(prev => { const next = v(prev); persist("copiesPdfsCount", next.length); return next; }); } else { setCopiesPdfsRaw(v); persist("copiesPdfsCount", v.length); } };
-
-      const [masterCorrection, setMasterCorrectionRaw] = useState(() => load("masterCorrection", ""));
-      const setMasterCorrection = v => { setMasterCorrectionRaw(v); persist("masterCorrection", v); };
-      const [userDirectives, setUserDirectivesRaw] = useState(() => load("userDirectives", ""));
-      const setUserDirectives = v => { setUserDirectivesRaw(v); persist("userDirectives", v); };
-
-      const [corrections, setCorrectionsRaw] = useState(() => load("corrections", []));
-      const setCorrections = v => { if (typeof v === 'function') { setCorrectionsRaw(prev => { const next = v(prev); persist("corrections", next); return next; }); } else { setCorrectionsRaw(v); persist("corrections", v); } };
-      const updateCorrection = (id, field, value) => setCorrections(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
-
-      const [mailsDone, setMailsDoneRaw] = useState(() => load("mailsDone", false));
-      const setMailsDone = v => { setMailsDoneRaw(v); persist("mailsDone",v); };
-
-      const students = parseStudents(studentsRaw);
-      const validCorrs = corrections.filter(c=>!c.skipped);
-      const avg = validCorrs.filter(c=>!isNaN(+c.note)).reduce((a,c,_,arr)=>a+ +c.note/arr.length,0);
-      
-      const canNext = [!!upSubPdf, students.length > 0, !!masterCorrection, corrections.length>0, true][step];
-
-      const readPdf = (file, cb) => { const r = new FileReader(); r.onload = e => cb(e.target.result.split(",")[1]); r.readAsDataURL(file); };
-
-      const handleSubjectPdf = (file) => {
-        if (!file||file.type!=="application/pdf") return;
-        setUpSubPdfName(file.name);
-        readPdf(file, b64 => setUpSubPdf(b64));
-      };
-
-      const addCopiesPdf = (files) => {
-        const arr = Array.from(files).filter(f=>f.type==="application/pdf");
-        if (!arr.length) return;
-        let loaded = 0, firstB64 = null;
-        arr.forEach(file => {
-          readPdf(file, b64 => {
-            if (loaded === 0) firstB64 = b64;
-            setCopiesPdfs(prev => [...prev, {name: file.name, b64}]);
-            loaded++;
-            if (loaded === arr.length && firstB64 && students.length === 0) extractNames(firstB64);
-          });
-        });
-      };
-
-      const extractNames = async (b64) => {
-        if (!b64 || !apiKey) return;
-        setBusy(true); setStatus("Extraction automatique des profils élèves...");
-        try {
-          const parts = [
-            { inlineData: { mimeType: "application/pdf", data: b64 } },
-            { text: "Extrais le nom complet et l'email de chaque élève présent. Retourne uniquement un JSON pur: [{name, email}]." }
-          ];
-          const raw = await callGemini(apiKey, parts, "Extrais en JSON pur, sans markdown.", true, "gemini-2.5-flash", (msg) => setStatus(msg));
-          const arr = safeJSONParse(raw);
-          if (Array.isArray(arr)) setStudentsRaw(arr.map(s => s.email ? `${s.name}, ${s.email}` : s.name).join("\n"));
-          setStatus("✅ Liste extraite.");
-        } catch(e) { setStatus("⚠️ Échec de l'extraction auto."); }
-        setBusy(false);
-      };
-
-      const generateMasterKey = async () => {
-        if (!upSubPdf || !apiKey) return;
-        setBusy(true); setStatus("Génération du corrigé officiel (Formatage Mathématique Optimal)...");
-        try {
-          const parts = [
-            { inlineData: { mimeType: "application/pdf", data: upSubPdf } },
-            { text: "Résous ce sujet de mathématiques de manière exhaustive. Dédaille chaque étape de calcul." }
-          ];
-          const sysInstruction = `Tu es un professeur de mathématiques. Rédige un corrigé parfait, structuré et détaillé.
-RÈGLES DE FORMATAGE (CRITIQUE) :
-- Structure avec \\section*{Exercice X} et \\subsection*{Question Y}.
-- Isole TOUTES les équations sur leur propre ligne avec les balises $$...$$ (Display mode).
-- Utilise $...$ pour les petites formules.
-- N'utilise JAMAIS l'environnement \\begin{tabular}. Pour les tableaux de signes, de variations ou les arbres de probabilités, utilise EXCLUSIVEMENT l'environnement mathématique \\begin{array} et entoure-le toujours de $$...$$.`;
-          
-          const raw = await callGemini(apiKey, parts, sysInstruction, false, modelChoice, msg => setStatus(`[Génération Corrigé] ${msg}`));
-          setMasterCorrection(raw);
-          setStatus("✅ Corrigé de référence généré avec succès !");
-        } catch(e) { setStatus("❌ Erreur : " + e.message); }
-        setBusy(false);
-      };
-
-      const executeCorrection = async () => {
-        if (!copiesPdfs.length || !apiKey || !students.length || !masterCorrection) return;
-        setBusy(true); setStatus("Préparation du document global..."); setProgress(5);
-
-        let mergedB64;
-        try { mergedB64 = await mergePdfs(copiesPdfs); }
-        catch(e) { setStatus("❌ Erreur fusion PDF : "+e.message); setBusy(false); return; }
-
-        setStatus("Phase 1/3 : Repérage des copies dans le lot...");
-        let pageMapping = [];
-        try {
-          const studentList = students.map(s => `- ${s.name}`).join("\n");
-          const mappingPrompt = `Voici un document PDF scanné.
-LISTE DES ÉLÈVES :
-${studentList}
-Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL tableau JSON pur :
-[ { "name": "Nom de l'élève", "pageStart": 1, "pageEnd": 2 } ]`;
-          const rawMapping = await callGemini(apiKey, [{ inlineData: { mimeType: "application/pdf", data: mergedB64 } }, { text: mappingPrompt }], "JSON pur.", true, modelChoice, msg => setStatus(`[Cartographie] ${msg}`));
-          pageMapping = safeJSONParse(rawMapping);
-        } catch(e) { setStatus("❌ Échec cartographie : " + e.message); setBusy(false); return; }
-
-        setProgress(20);
-        const { PDFDocument } = window.PDFLib;
-        let srcDoc;
-        try { srcDoc = await PDFDocument.load(Uint8Array.from(atob(mergedB64), c => c.charCodeAt(0))); }
-        catch(e) { setStatus("❌ Erreur PDF-Lib : " + e.message); setBusy(false); return; }
-        
-        const totalPages = srcDoc.getPageCount();
-        const results = [];
-
-        for (let i = 0; i < students.length; i++) {
-          const s = students[i];
-          const mapData = pageMapping.find(m => m.name && m.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
-          
-          if (!mapData || !mapData.pageStart) {
-            results.push({...s, skipped: true, note: "?", appreciation: "Copie introuvable.", details: []});
-            continue;
-          }
-
-          let subPdfB64 = null;
-          try {
-            const newDoc = await PDFDocument.create();
-            const pStart = Math.max(0, mapData.pageStart - 1);
-            const pEnd = Math.min(totalPages - 1, (mapData.pageEnd || mapData.pageStart) - 1);
-            const indices = []; for (let p = pStart; p <= pEnd; p++) indices.push(p);
-            if (indices.length > 0) {
-              const copiedPages = await newDoc.copyPages(srcDoc, indices);
-              copiedPages.forEach(pg => newDoc.addPage(pg));
-              subPdfB64 = uint8ToBase64(await newDoc.save());
-            }
-          } catch(e) {}
-
-          if (!subPdfB64) { results.push({...s, skipped: true, note: "?", appreciation: "Erreur découpage.", details: []}); continue; }
-
-          setStatus(`Phase 3/3 : Correction ciblée de ${s.name} (${i + 1}/${students.length})…`);
-          setProgress(20 + Math.round((i / students.length) * 80));
-
-          if (i > 0) {
-            let count = modelChoice.includes("pro") ? 30 : 3;
-            while (count > 0) { setStatus(`Temporisation (${count}s) avant ${s.name}...`); await delay(1000); count--; }
-          }
-
-          // Instructions simplifiées sans manipulation complexe du JSON, faisant confiance à la robustesse native
-          const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Entoure TOUTES les équations avec $...$ dans tes remarques. Pour les tableaux, utilise EXCLUSIVEMENT \\begin{array} entouré de $$. N'utilise jamais \\begin{tabular}. Renvoie impérativement un JSON pur.`;
-          
-          const promptText = `
-CORRIGÉ OFFICIEL :
-${masterCorrection}
-
-DIRECTIVES ET BARÈME :
-${userDirectives || "Applique un barème classique sur 20."}
-
-TÂCHE : Voici la copie de ${s.name}. Évalue-la STRICTEMENT sur le corrigé et les directives.
-SOIS EXTRÊMEMENT DÉTAILLÉ dans tes remarques pour CHAQUE sous-question (1.a, 1.b, etc.). Explique précisément où est l'erreur, calcule les points correspondants.
-FORMAT JSON STRICT ATTENDU :
-{
-  "note": 14.5,
-  "reviewNeeded": false,
-  "appreciation": "${s.name.split(" ")[0]}, ton raisonnement est bon, mais attention...",
-  "details": [ { "exercice": "Ex 1 - Q1.a", "sur": 2.0, "obtenu": 1.5, "remarque": "La factorisation est correcte jusqu'à l'avant-dernière ligne, mais tu as fait une erreur de signe : $2x-4=0 \\implies x=2$." } ],
-  "conseil": "Relis tes formules de dérivation."
-}`;
-
-          try {
-            const parts = [
-              { inlineData: { mimeType: "application/pdf", data: subPdfB64 } },
-              { text: promptText }
-            ];
-            const raw = await callGemini(apiKey, parts, sysInstruction, true, modelChoice, msg => setStatus(`[Correction ${s.name}] ${msg}`));
-            const parsed = safeJSONParse(raw);
-            results.push({...s, ...parsed, latexCorrection: masterCorrection});
-          } catch(e) {
-            results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection: masterCorrection});
-          }
-        }
-
-        setProgress(100); setCorrections(results); setBusy(false);
-        setStatus("✅ Évaluation par lot terminée !"); setTimeout(() => setStatus(""), 4000);
-      };
-
-      const sendResults = async () => {
-        setBusy(true); setProgress(0);
-        try { await getGmailToken(); } catch(e) { setStatus("❌ " + e.message); setBusy(false); return; }
-        
-        let errors = [];
-        const activeStudents = corrections.filter(c => !c.skipped && c.email);
-        
-        for(let idx=0; idx<activeStudents.length; idx++){
-          const c = activeStudents[idx];
-          setStatus(`Envoi à ${c.name}…`); setProgress(Math.round((idx / activeStudents.length) * 100));
-          
-          const prenom = c.name.split(" ")[0];
-          const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const subject = `Bilan de Mathématiques - ${sessionName}`;
-          
-          let htmlBody = `
-            <h1>Bilan personnalisé : ${c.name}</h1>
-            <p style="font-size:24px; font-weight:bold; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</p>
-            <p><strong>Appréciation :</strong><br/> ${latexToHtml(appreciation)}</p>
-            <h2 style="font-size:18px; color:#374151; margin-top:24px;">Détail par exercice</h2>
-          `;
-
-          (c.details||[]).forEach(d => {
-            htmlBody += `
-              <div class="details-box">
-                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-                  <b style="color: #1d4ed8; font-size: 16px;">${d.exercice}</b>
-                  <span style="font-weight: 700; font-size: 16px;">${d.obtenu}/${d.sur}</span>
-                </div>
-                ${d.remarque ? `<div style="color: #374151; border-top:1px dashed #d1d5db; padding-top:8px;">${latexToHtml(d.remarque)}</div>` : ''}
+          {/* Corrigé rendu KaTeX + zone de consignes */}
+          {corrections.length === 0 && (
+            <Card>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <span style={{fontSize:14,fontWeight:500}}>📐 Corrigé et barème</span>
+                {corrRefLoading && <span style={{fontSize:12,color:"#1d4ed8"}}>⏳ Génération…</span>}
+                {!corrRefLoading&&corrRef && <span style={{fontSize:11,color:"#16a34a"}}>✓ Prêt</span>}
               </div>
-            `;
-          });
+              {corrRefLoading && <p style={{fontSize:12,color:"#6b7280",textAlign:"center"}}>Génération du corrigé depuis le sujet PDF…</p>}
+              {!corrRefLoading&&corrRef && (
+                <div>
+                  {/* Rendu KaTeX du corrigé */}
+                  <div style={{background:"#fff",border:"0.5px solid #e5e7eb",borderRadius:8,padding:"20px 24px",lineHeight:1.8,fontSize:13,maxHeight:400,overflowY:"auto",marginBottom:12}}
+                    dangerouslySetInnerHTML={{__html:latexToHtml(corrRef)}}/>
+                  {/* Zone de consignes pour modifier le corrigé */}
+                  <div style={{background:"#f0f9ff",border:"0.5px solid #bae6fd",borderRadius:8,padding:"12px 14px"}}>
+                    <div style={{fontSize:12,fontWeight:500,color:"#0369a1",marginBottom:6}}>✏️ Modifier le corrigé</div>
+                    <p style={{fontSize:11,color:"#0369a1",marginBottom:8}}>Décrivez vos modifications et cliquez sur "Régénérer" :</p>
+                    <textarea value={corrEditInstr||""} onChange={function(e){setCorrEditInstr(e.target.value);}}
+                      placeholder={"Ex : À l'exercice 2, la réponse est 42 et non 24. Ajoute aussi un encadré pour la formule du discriminant."}
+                      style={{width:"100%",minHeight:70,fontSize:12,marginBottom:8}}/>
+                    <button disabled={busy||!apiKey||!(corrEditInstr||"").trim()} onClick={applyEditInstr}
+                      style={{fontSize:12,padding:"5px 14px",background:"#0369a1",border:"none"}}>
+                      {busy&&corrEditBusy?"⏳ Régénération…":"🔄 Régénérer le corrigé"}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {!corrRefLoading&&!corrRef && <p style={{fontSize:12,color:"#9ca3af",fontStyle:"italic"}}>Le corrigé sera généré automatiquement une fois les copies chargées.</p>}
+            </Card>
+          )}
 
-          if (conseil) {
-            htmlBody += `<div class="conseil"><strong>💡 Conseil :</strong><br/> ${latexToHtml(conseil)}</div>`;
-          }
+          {/* Zone upload copies */}
+          {corrections.length === 0 && (
+            <Card>
+              <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>📄 Copies à corriger</div>
+              <DropZone id="copies-step2" multiple={true}
+                loaded={copies.length > 0}
+                name={copies.length + " fichier" + (copies.length > 1 ? "s" : "") + " chargé" + (copies.length > 1 ? "s" : "")}
+                onFiles={addCopies}
+                label="Glissez un ou plusieurs PDFs ici ou cliquez"
+                sub="Conseil : scanner à 150-200 DPI — traitement par lots de 10"/>
+              {copies.length > 0 && (
+                <div style={{marginBottom:8}}>
+                  {copies.map(function(p, i) {
+                    return (
+                      <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"4px 8px",background:"#f3f4f6",borderRadius:6,marginBottom:4}}>
+                        <span>📄 {p.name}</span>
+                        <span style={{color:"#dc2626",cursor:"pointer"}} onClick={function(){setCopies(function(prev){return prev.filter(function(_,j){return j!==i;});});}}>✕</span>
+                      </div>
+                    );
+                  })}
+                  <button onClick={function(){document.getElementById("copies-add").click();}} style={{width:"100%",background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db",fontSize:12,marginTop:4}}>
+                    ➕ Ajouter un PDF (copie en retard…)
+                  </button>
+                  <input id="copies-add" type="file" accept="application/pdf" multiple style={{display:"none"}} onChange={function(e){addCopies(e.target.files);}}/>
+                </div>
+              )}
+              {copies.length > 0 && (
+                <div>
+                  <button disabled={busy||!apiKey||corrRefLoading} onClick={correctFromPdf} style={{width:"100%",marginBottom:6}}>
+                    {busy ? status : "🤖 Corriger depuis les PDFs ↗"}
+                  </button>
+                  {busy && status && (
+                    <p style={{fontSize:12,color:"#1d4ed8",textAlign:"center",marginBottom:4}}>⏳ {status}</p>
+                  )}
+                  {!busy && status && status.startsWith("❌") && (
+                    <p style={{fontSize:12,color:"#dc2626",textAlign:"center",marginBottom:4}}>{status}</p>
+                  )}
+                  {!busy && copies.length > 0 && (
+                    <p style={{fontSize:11,color:"#9ca3af",textAlign:"center",marginTop:2}}>
+                      {copies.length} fichier{copies.length>1?"s":""} — ~{Math.ceil(copies.length/10)} lot{Math.ceil(copies.length/10)>1?"s":""}
+                    </p>
+                  )}
+                </div>
+              )}
 
-          htmlBody += `
-            <h2 style="font-size:20px; color:#1e3a8a; margin-top:32px; border-bottom:1px solid #1e3a8a; padding-bottom:8px;">Corrigé détaillé de l'épreuve</h2>
-            <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
-              ${c.latexCorrection ? latexToHtml(c.latexCorrection) : '<p>Aucun corrigé disponible.</p>'}
-            </div>
-            <p style="margin-top:24px; color:#6b7280; font-size:12px;">Cet e-mail a été généré automatiquement.</p>
-          `;
+            </Card>
+          )}
 
-          try { 
-            // ENVOI DIRECT DU HTML (Plus de PDF, plus de plantage de navigateur)
-            await sendGmailHtml(c.email, subject, htmlBody);
-          } catch(e) { 
-            errors.push(c.name); 
-          }
-        }
-        
-        setProgress(100); setMailsDone(true); setBusy(false);
-        setStatus(errors.length ? `⚠️ Échec envois : ${errors.join(", ")}` : "✅ Mails envoyés avec succès !");
-      };
-
-      return (
-        <div style={{ maxWidth:750, margin:"0 auto", padding:"1.5rem 1rem" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.5rem" }}>
+          {/* Résultats de correction */}
+          {corrections.length > 0 && (
             <div>
-              <h1 style={{ fontSize:20, marginBottom:4, color:"#111827" }}>{sessionName}</h1>
-              <button style={{ background:"transparent", color:"#6b7280", border:"none", padding:0, fontSize:13 }} onClick={onBack}>← Retour aux devoirs</button>
+              {/* Corrigé général — affiché une seule fois */}
+              {corrRef && (
+                <Card style={{marginBottom:12}}>
+                  <div style={{fontSize:13,fontWeight:500,color:"#374151",marginBottom:10}}>📐 Corrigé du sujet</div>
+                  <div style={{background:"#f9fafb",border:"0.5px solid #e5e7eb",borderRadius:8,padding:"16px 18px",lineHeight:1.8,fontSize:13,maxHeight:400,overflowY:"auto"}}
+                    dangerouslySetInnerHTML={{__html:latexToHtml(corrRef)}}/>
+                </Card>
+              )}
+              {parsedStudents.map(function(s) {
+                var c = corrections.find(function(x){return x.id===s.id;});
+                var nc = c && !isNaN(+c.note) ? (+c.note>=10?"#16a34a":"#dc2626") : "#111";
+                return (
+                  <Card key={s.id}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                      <span style={{fontSize:14,fontWeight:500}}>{s.name}</span>
+                      {c && !c.skipped && (
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          {c.pageStart && <Bdg color="info">p.{c.pageStart}–{c.pageEnd}</Bdg>}
+                          <span style={{fontSize:22,fontWeight:500,color:nc}}>{c.note}<span style={{fontSize:14,color:"#6b7280"}}>/20</span></span>
+                        </div>
+                      )}
+                    </div>
+                    {c && !c.skipped ? (
+                      <div>
+                        <p style={{fontSize:13,color:"#6b7280",margin:"0 0 8px"}}>{c.appreciation}</p>
+                        {(c.details||[]).map(function(d,i) {
+                          return (
+                            <div key={i} style={{padding:"6px 0",borderTop:"0.5px solid #e5e7eb",fontSize:12}}>
+                              <div style={{display:"flex",justifyContent:"space-between"}}>
+                                <span style={{color:"#6b7280",fontWeight:500}}>{d.exercice}</span>
+                                <span style={{fontWeight:600}}>{d.obtenu}/{d.sur}</span>
+                              </div>
+                              {d.transcription && (
+                                <div style={{fontSize:11,color:"#9ca3af",fontStyle:"italic",margin:"2px 0",background:"#f9fafb",padding:"3px 6px",borderRadius:4}}>
+                                  🔍 {d.transcription}
+                                </div>
+                              )}
+                              <div style={{color:"#444",lineHeight:1.6}} dangerouslySetInnerHTML={{__html:latexToHtml(d.remarque||"")}}/>
+                            </div>
+                          );
+                        })}
+                        <p style={{fontSize:12,color:"#6b7280",fontStyle:"italic",margin:"8px 0 0"}}>💡 {c.conseil}</p>
+                      </div>
+                    ) : (
+                      <p style={{fontSize:13,color:"#9ca3af",fontStyle:"italic"}}>Copie non trouvée dans le PDF</p>
+                    )}
+                  </Card>
+                );
+              })}
+              {/* Copies en retard (non dans la liste principale) */}
+              {corrections.filter(function(c){return !parsedStudents.find(function(s){return s.id===c.id;})&&!c.skipped;}).map(function(c) {
+                var nc = !isNaN(+c.note)?(+c.note>=10?"#16a34a":"#dc2626"):"#111";
+                return (
+                  <Card key={c.id}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <span style={{fontSize:14,fontWeight:500}}>{c.name} <span style={{fontSize:11,color:"#9ca3af"}}>(retard)</span></span>
+                      <span style={{fontSize:22,fontWeight:500,color:nc}}>{c.note}<span style={{fontSize:14,color:"#6b7280"}}>/20</span></span>
+                    </div>
+                    <p style={{fontSize:13,color:"#6b7280"}}>{c.appreciation}</p>
+                  </Card>
+                );
+              })}
+              <div style={{display:"flex",gap:8,marginTop:4}}>
+                <button onClick={function(){resetCorrections();}} style={{flex:1,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}}>
+                  ↩ Recommencer
+                </button>
+                <button disabled={busy||!apiKey} onClick={function(){document.getElementById("late-pdf").click();}} style={{flex:1,background:"#f3f4f6",color:"#1d4ed8",border:"0.5px solid #bfdbfe",fontSize:12}}>
+                  ➕ Copie en retard
+                </button>
+                <input id="late-pdf" type="file" accept="application/pdf" style={{display:"none"}} onChange={function(e){if(e.target.files[0])addLate(e.target.files[0]);}}/>
+              </div>
             </div>
-            <div style={{ fontSize:12, color:"#16a34a", background:"#dcfce7", padding:"4px 10px", borderRadius:12 }}>Sauvegarde auto activée</div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ STEP 3 : Résultats ═══ */}
+      {step === 3 && (
+        <Card>
+          {/* Aperçu corrigé KaTeX */}
+          {corrRef && (
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:13,fontWeight:500,marginBottom:8,color:"#374151"}}>
+                📐 Aperçu du corrigé — tel que reçu par les élèves
+              </div>
+              <div style={{background:"#fff",border:"0.5px solid #e5e7eb",borderRadius:8,padding:"20px 24px",lineHeight:1.8,fontSize:13,maxHeight:300,overflowY:"auto"}}
+                dangerouslySetInnerHTML={{__html:latexToHtml(corrRef)}}/>
+            </div>
+          )}
+          {!corrRef && (
+            <div style={{background:"#fefce8",border:"0.5px solid #fde68a",borderRadius:8,padding:"10px 12px",marginBottom:16,fontSize:12,color:"#92400e"}}>
+              ⏳ Corrigé en cours de génération…
+            </div>
+          )}
+
+          {/* Exports */}
+          <div style={{display:"flex",gap:8,marginBottom:16}}>
+            <button onClick={exportCsv} style={{flex:1,fontSize:12,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}}>📊 CSV</button>
+            <button onClick={exportRecap} disabled={!window.jspdf} style={{flex:1,fontSize:12,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}}>📄 PDF récap</button>
           </div>
 
-          <Card>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              <Field label="🔑 Clé API Google AI Studio">
-                <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="AIzaSy..." style={{ fontFamily:"monospace" }}/>
-              </Field>
-              <Field label="🤖 Modèle IA">
-                <select value={modelChoice} onChange={e => setModelChoice(e.target.value)}>
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Super équilibre)</option>
-                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Ultra Rapide)</option>
-                  <option value="gemini-2.5-pro">Gemini 2.5 Pro (Lent - Très Analytique)</option>
-                </select>
-              </Field>
-            </div>
-          </Card>
-
-          <div style={{ display:"flex", alignItems:"flex-start", marginBottom:"2rem", background:"#fff", padding:"20px", borderRadius:12, border:"1px solid #e5e7eb" }}>
-            {STEPS.map((label,i)=>{
-              const done=i<step,active=i===step;
+          {/* Grille des notes */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:16}}>
+            {validCorrs.map(function(c) {
+              var nc = !isNaN(+c.note)?(+c.note>=10?"#16a34a":"#dc2626"):"#6b7280";
               return (
-                <div key={i} style={{ flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:8 }}>
-                  <div style={{ display:"flex",alignItems:"center",width:"100%" }}>
-                    {i>0&&<div style={{ flex:1,height:"2px",background:i<=step?"#1d4ed8":"#e5e7eb" }}/>}
-                    <div onClick={()=>done&&setStep(i)} style={{
-                      width:36,height:36,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
-                      fontSize:14,fontWeight:600,flexShrink:0,cursor:done?"pointer":"default",
-                      background:done?"#1d4ed8":active?"#dbeafe":"#f3f4f6",
-                      color:done?"#fff":active?"#1d4ed8":"#9ca3af",
-                      border:done?"none":active?"2px solid #1d4ed8":"2px solid #e5e7eb",
-                    }}>{done?"✓":i+1}</div>
-                    {i<STEPS.length-1&&<div style={{ flex:1,height:"2px",background:i<step?"#1d4ed8":"#e5e7eb" }}/>}
-                  </div>
-                  <span style={{ fontSize:12,textAlign:"center",color:active?"#1d4ed8":"#6b7280",fontWeight:active?700:500 }}>{label}</span>
+                <div key={c.id} style={{background:"#f3f4f6",borderRadius:8,padding:12,textAlign:"center"}}>
+                  <div style={{fontSize:11,color:"#6b7280",marginBottom:4}}>{c.name}</div>
+                  <div style={{fontSize:24,fontWeight:500,color:nc,marginBottom:6}}>{c.note}<span style={{fontSize:13,color:"#6b7280"}}>/20</span></div>
+                  {mailsDone && c.email && (
+                    <button onClick={function(){resendOne(c);}} disabled={resending===c.id||busy}
+                      style={{fontSize:10,padding:"2px 8px",background:"#fff",color:resending===c.id?"#9ca3af":"#1d4ed8",border:"0.5px solid #93c5fd",borderRadius:4}}>
+                      {resending===c.id?"…":"↩ Renvoyer"}
+                    </button>
+                  )}
                 </div>
               );
             })}
           </div>
 
-          {(busy || status) && (
-            <div style={{ background: status.includes("❌")||status.includes("⚠️")?"#fee2e2":"#eff6ff", border: status.includes("❌")||status.includes("⚠️")?"1px solid #fca5a5":"1px solid #bfdbfe", borderRadius:8, padding:"16px", marginBottom:16 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:14, fontWeight:600, color: status.includes("❌")||status.includes("⚠️")?"#dc2626":"#1d4ed8", marginBottom:busy?8:0 }}>
-                <span>{status}</span>
-                {busy && <span>{progress}%</span>}
+          {/* Moyenne */}
+          <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderTop:"0.5px solid #e5e7eb"}}>
+            <span style={{fontSize:13,color:"#6b7280"}}>Moyenne de classe</span>
+            <span style={{fontSize:18,fontWeight:500}}>{validCorrs.length > 0 ? avg.toFixed(1) : "—"}/20</span>
+          </div>
+
+          {/* Info envoi */}
+          <div style={{background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:12,color:"#166534"}}>
+            ✉️ Envoi depuis <strong>maths.perriand@gmail.com</strong> — le corrigé avec les formules est intégré dans chaque mail.<br/>
+            Un écran Google s'ouvrira la première fois pour autoriser l'envoi.
+          </div>
+
+          {/* Bouton envoi ou succès */}
+          {mailsDone ? (
+            <div style={{textAlign:"center",padding:"1.5rem"}}>
+              <div style={{fontSize:28,marginBottom:8}}>✅</div>
+              <span style={{fontWeight:500,color:"#16a34a"}}>Mails envoyés à tous les élèves !</span>
+              <p style={{fontSize:11,color:"#9ca3af",marginTop:8}}>Utilisez "↩ Renvoyer" sur chaque carte pour un renvoi individuel.</p>
+            </div>
+          ) : (
+            <div>
+              <div style={{fontSize:11,color:"#6b7280",textAlign:"center",margin:"8px 0"}}>
+                ⏱ ~{Math.ceil(validCorrs.filter(function(c){return !!c.email;}).length*3/60)+1} min
+                &nbsp;·&nbsp; 0 appel Gemini
               </div>
-              {busy && <div style={{ width:"100%", background:"#dbeafe", height:6, borderRadius:3, overflow:"hidden" }}><div style={{ width:`${progress}%`, background:"#1d4ed8", height:"100%", transition:"width 0.3s" }}/></div>}
+              {busy && progress && (
+                <div style={{marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#6b7280",marginBottom:4}}>
+                    <span>📬 {progress.label}…</span>
+                    <span>{progress.current}/{progress.total}</span>
+                  </div>
+                  <div style={{background:"#e5e7eb",borderRadius:999,height:6}}>
+                    <div style={{background:"#1d4ed8",borderRadius:999,height:6,width:(progress.current/progress.total*100)+"%",transition:"width 0.3s"}}/>
+                  </div>
+                </div>
+              )}
+              {busy && status && !progress && <p style={{textAlign:"center",fontSize:12,color:"#1d4ed8",marginBottom:8}}>⏳ {status}</p>}
+              <button disabled={busy||corrRefLoading} onClick={sendResults} style={{width:"100%",marginTop:4}}>
+                {"📬 Envoyer à " + validCorrs.filter(function(c){return !!c.email;}).length + " élève" + (validCorrs.filter(function(c){return !!c.email;}).length>1?"s":"")}
+              </button>
             </div>
           )}
+        </Card>
+      )}
 
-          {step===0&&(
-            <Card>
-              <SectionHead title="Le Sujet de l'Évaluation"/>
-              <p style={{ fontSize:14, color:"#6b7280", marginBottom:16 }}>Déposez le fichier PDF du sujet. Il servira de base à l'IA pour générer le corrigé parfait à l'étape suivante.</p>
-              <div onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();handleSubjectPdf(e.dataTransfer.files[0]);}} onClick={()=>document.getElementById("subj-pdf").click()}
-                style={{ border:"2px dashed #cbd5e1", borderRadius:12, padding:"3rem 2rem", textAlign:"center", cursor:"pointer", background:upSubPdf?"#f0fdf4":"#f8fafc", transition:"all 0.2s" }}>
-                <input id="subj-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={e=>handleSubjectPdf(e.target.files[0])}/>
-                {upSubPdf?<div style={{ color:"#16a34a", fontSize:16, fontWeight:600 }}>✓ Sujet chargé : {upSubPdfName}</div>:
-                <div style={{ color:"#64748b", fontSize:15 }}>📄 Cliquez ou glissez le PDF du Sujet ici</div>}
-              </div>
-            </Card>
-          )}
+      {/* Navigation */}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:"1.5rem"}}>
+        {step > 0
+          ? <button style={{background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}} disabled={busy} onClick={function(){setStep(step-1);}}>← Retour</button>
+          : <div/>
+        }
+        {step < 3 && (
+          <button disabled={!canNext||busy||!apiKey} onClick={function(){setStep(step+1);}}>
+            {["Diffuser →","Corriger les copies →","Voir les résultats →"][step]}
+          </button>
+        )}
+      </div>
+      <p style={{textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem"}}>Powered by Gemini (Google)</p>
+    </div>
+  );
+} // fin Devoir
 
-          {step===1&&(
-            <Card>
-              <SectionHead title="Les Copies des Élèves"/>
-              <p style={{ fontSize:14, color:"#6b7280", marginBottom:16 }}>Déposez le PDF scanné de toute la classe. Le système extraira automatiquement les noms.</p>
-              <div onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();addCopiesPdf(e.dataTransfer.files);}} onClick={()=>document.getElementById("copies-pdf").click()}
-                style={{ border:"2px dashed #cbd5e1", borderRadius:12, padding:"2rem", textAlign:"center", cursor:"pointer", marginBottom:16, background:copiesPdfs.length?"#f0fdf4":"#f8fafc" }}>
-                <input id="copies-pdf" type="file" accept="application/pdf" multiple style={{ display:"none" }} onChange={e=>{if(e.target.files.length)addCopiesPdf(e.target.files);}}/>
-                {copiesPdfs.length>0?<div style={{ color:"#16a34a", fontWeight:600 }}>✓ {copiesPdfs.length} fichier(s) PDF en mémoire</div>:
-                <div style={{ color:"#64748b" }}>📥 Déposez le PDF des copies scannées</div>}
-              </div>
-              <Field label="Liste des élèves reconnus (Ajustez les emails si besoin) :">
-                <textarea value={studentsRaw} onChange={e=>setStudentsRaw(e.target.value)} placeholder="Nom, email@lycee.fr..." style={{ minHeight:150, fontFamily:"monospace", fontSize:13 }}/>
-              </Field>
-            </Card>
-          )}
-
-          {step===2&&(
-            <Card>
-              <SectionHead title="Le Corrigé de Référence (Pilotage de l'IA)"/>
-              <div style={{ background:"#fffbeb", border:"1px solid #fde68a", padding:"12px 16px", borderRadius:8, fontSize:13, color:"#b45309", marginBottom:16 }}>
-                💡 En générant un corrigé de référence une seule fois, vous garantissez l'homogénéité de la notation pour toute la classe et vous divisez par 5 votre consommation de tokens !
-              </div>
-
-              {!masterCorrection ? (
-                <button disabled={busy||!apiKey||!upSubPdf} onClick={generateMasterKey} style={{ width:"100%", background:"#4f46e5", padding:"14px", fontSize:15 }}>✨ Générer le corrigé officiel depuis le sujet</button>
-              ) : (
-                <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-                  <div style={{ border:"1px solid #e5e7eb", borderRadius:8, background:"#f9fafb" }}>
-                    <div style={{ padding:"10px 14px", background:"#e5e7eb", fontWeight:600, fontSize:13, borderTopLeftRadius:8, borderTopRightRadius:8, display:"flex", justifyContent:"space-between" }}>
-                      Aperçu du corrigé généré par l'IA
-                      <button onClick={generateMasterKey} style={{ background:"transparent", border:"none", color:"#4f46e5", padding:0, fontSize:12 }}>Regénérer 🔄</button>
-                    </div>
-                    <div style={{ padding:"16px", maxHeight:"400px", overflowY:"auto", fontSize:14 }} dangerouslySetInnerHTML={{ __html: latexToHtml(masterCorrection) }} />
-                  </div>
-                  <Field label="Vos consignes d'adaptation & Barème (L'IA obéira à ces règles pour la correction) :">
-                    <textarea value={userDirectives} onChange={e=>setUserDirectives(e.target.value)} 
-                      placeholder="Ex: L'exercice 1 est sur 5 points. Ne pénalise pas si l'élève oublie la constante d'intégration à la question 2. Sois indulgent sur les erreurs de calcul..." 
-                      style={{ minHeight:100, border:"2px solid #bfdbfe", background:"#eff6ff" }}/>
-                  </Field>
-                </div>
-              )}
-            </Card>
-          )}
-
-          {step===3&&(
-            <Card>
-              <SectionHead title="Évaluation Intelligente"/>
-              {corrections.length===0 ? (
-                <div style={{ textAlign:"center", padding:"2rem 0" }}>
-                  <p style={{ fontSize:15, color:"#374151", marginBottom:24 }}>
-                    L'IA va maintenant extraire chaque copie du grand PDF et l'évaluer en appliquant strictement votre corrigé de référence.
-                  </p>
-                  <button disabled={busy||!apiKey||students.length===0} onClick={executeCorrection} style={{ background:"#16a34a", padding:"16px 32px", fontSize:16, fontWeight:600 }}>
-                    🚀 Lancer l'évaluation de la classe ({students.length} élèves)
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-                  <div style={{ background:"#dcfce7", color:"#166534", padding:"12px", borderRadius:8, fontSize:14, fontWeight:500 }}>
-                    ✅ Corrections terminées. Vous pouvez ajuster les notes et mots de passe ci-dessous.
-                  </div>
-                  {students.map(s=>{
-                    const c=corrections.find(x=>x.id===s.id);
-                    if (!c||c.skipped) return <div key={s.id} style={{ padding:12, background:"#f3f4f6", color:"#6b7280", borderRadius:8, fontSize:13 }}>Copie de {s.name} ignorée/introuvable.</div>;
-                    return (
-                      <div key={s.id} style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:16 }}>
-                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                          <span style={{ fontWeight:600, fontSize:16 }}>{s.name}</span>
-                          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                            <input type="text" value={c.note??""} onChange={e=>updateCorrection(s.id,'note',e.target.value)} style={{ width:60, textAlign:"center", fontWeight:"bold", fontSize:16, border:"2px solid #d1d5db" }}/>
-                            <span style={{ color:"#6b7280", fontWeight:600 }}>/20</span>
-                          </div>
-                        </div>
-                        <Field label="Appréciation">
-                          <textarea value={c.appreciation||""} onChange={e=>updateCorrection(s.id,'appreciation',e.target.value)} style={{ minHeight:60 }}/>
-                        </Field>
-                        <div style={{ display:"grid", gap:8, background:"#f9fafb", padding:12, borderRadius:8, marginBottom:12 }}>
-                          {c.details?.map((d,i)=>(
-                            <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
-                              <b>{d.exercice}</b>
-                              <span dangerouslySetInnerHTML={{__html: `<b>${d.obtenu}/${d.sur}</b> — ` + latexToHtml(d.remarque).replace(/<p[^>]*>/g,'').replace(/<\/p>/g,'')}}/>
-                            </div>
-                          ))}
-                        </div>
-                        <Field label="Conseil">
-                          <textarea value={c.conseil||""} onChange={e=>updateCorrection(s.id,'conseil',e.target.value)} style={{ minHeight:40 }}/>
-                        </Field>
-                      </div>
-                    );
-                  })}
-                  <button onClick={()=>setCorrections([])} style={{ background:"#f1f5f9", color:"#475569" }}>↻ Réinitialiser les corrections</button>
-                </div>
-              )}
-            </Card>
-          )}
-
-          {step===4&&(
-            <Card>
-              <SectionHead title="Diffusion des Résultats"/>
-              <div style={{ display:"flex", gap:12, marginBottom:20 }}>
-                <button onClick={()=>{
-                  const rows = [...validCorrs]
-                    .sort((a, b) => {
-                      const getLastName = name => {
-                        const parts = name.trim().split(/\s+/);
-                        return parts.length > 1 ? parts.pop().toLowerCase() : name.toLowerCase();
-                      };
-                      return getLastName(a.name).localeCompare(getLastName(b.name), 'fr');
-                    })
-                    .map(c => `"${c.name}","${c.note}","${(c.appreciation||"").replace(/"/g,"'")}","${(c.conseil||"").replace(/"/g,"'")}"`);
-                  const a = document.createElement("a"); a.href = "data:text/csv;charset=utf-8," + encodeURIComponent("\uFEFF\"Nom\",\"Note\",\"Appreciation\",\"Conseil\"\n" + rows.join("\n"));
-                  a.download = `Notes_${sessionName.replace(/\W/g,"_")}.csv`; a.click();
-                }} style={{ flex:1, background:"#f8fafc", color:"#0f172a", border:"1px solid #cbd5e1" }}>📊 Exporter Tableur (CSV)</button>
-              </div>
-
-              <div style={{ background:"#f8fafc", padding:20, borderRadius:12, textAlign:"center", border:"1px solid #e2e8f0" }}>
-                <div style={{ fontSize:14, color:"#64748b", marginBottom:8 }}>Moyenne de la classe</div>
-                <div style={{ fontSize:36, fontWeight:700, color:"#0f172a" }}>{validCorrs.length>0?avg.toFixed(1):"—"}<span style={{ fontSize:20, color:"#94a3b8" }}>/20</span></div>
-              </div>
-
-              <div style={{ marginTop:24 }}>
-                {mailsDone ? (
-                  <div style={{ textAlign:"center", padding:24, background:"#f0fdf4", border:"1px solid #86efac", borderRadius:12, color:"#166534" }}>
-                    <div style={{ fontSize:40, marginBottom:12 }}>🚀</div>
-                    <div style={{ fontSize:18, fontWeight:600 }}>Tous les e-mails contenant le bilan HTML ont été envoyés !</div>
-                  </div>
-                ) : (
-                  <button disabled={busy} onClick={sendResults} style={{ width:"100%", padding:"16px", background:"#2563eb", fontSize:16, fontWeight:600 }}>
-                    {busy ? "Génération HTML et envois en cours..." : "📧 Envoyer les Bilans HTML par Gmail"}
-                  </button>
-                )}
-              </div>
-            </Card>
-          )}
-
-          <div style={{ display:"flex", justifyContent:"space-between", marginTop:"2rem" }}>
-            <button style={{ background:"transparent", color:"#475569", border:"1px solid #cbd5e1", visibility:step>0?"visible":"hidden" }} disabled={busy} onClick={()=>setStep(step-1)}>← Étape Précédente</button>
-            {step<4&&<button disabled={!canNext||busy||!apiKey} onClick={()=>setStep(step+1)} style={{ background:"#0f172a", padding:"8px 24px" }}>Continuer →</button>}
-          </div>
-        </div>
-      );
-    }
-
-    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
-  </script>
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
+</script>
 </body>
 </html>
