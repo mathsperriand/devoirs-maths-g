@@ -6,7 +6,6 @@
   <title>Gestionnaire de devoirs — Maths (Gemini)</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -33,7 +32,6 @@
     h1 { font-size: 18px; font-weight: 600; }
     .katex-display { margin: 1.5em 0 !important; overflow-x: auto; overflow-y: hidden; padding: 5px 0; }
     .math-block-container { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 12px 0; }
-    .pdf-block { word-wrap: break-word; overflow-wrap: break-word; }
   </style>
 </head>
 <body>
@@ -42,7 +40,7 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "👥 Élèves", "🎯 Corrigé & Barème", "✏️ Correction", "📬 Résultats"];
 
-    /* ── Gmail OAuth & Utilities ── */
+    /* ── Gmail OAuth & Envoi d'E-mails HTML ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
     const GMAIL_SENDER    = "maths.perriand@gmail.com";
     const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
@@ -108,43 +106,36 @@
       return btoa(unescape(encodeURIComponent(str))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
     }
 
-    function chunkBase64(str) {
-      if (!str) return "";
-      const chunks = [];
-      for (let i = 0; i < str.length; i += 76) chunks.push(str.substring(i, i + 76));
-      return chunks.join("\r\n");
-    }
+    // Nouvelle fonction d'envoi d'e-mail direct en HTML (Remplace l'usine à gaz PDF)
+    function buildHtmlMime(to, subject, htmlBody) {
+      const katexCss = "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css";
+      const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+        <link rel="stylesheet" href="${katexCss}"/>
+        <style>
+          body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; color: #111; line-height: 1.6; font-size: 14px; }
+          h1 { font-size: 20px; border-bottom: 2px solid #1e3a8a; padding-bottom: 8px; color: #1e3a8a; margin-bottom: 16px; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px; }
+          td { padding: 8px; border-top: 1px solid #e5e7eb; vertical-align: top; }
+          .math-block-container { overflow-x: auto; text-align: center; margin: 16px 0; }
+          .conseil { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; margin-top: 16px; border-radius: 4px; color: #1e40af; }
+          .details-box { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+        </style></head><body>${htmlBody}</body></html>`;
 
-    function buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename) {
-      const boundary = "boundary_" + Math.random().toString(36).slice(2);
-      const parts = [
+      return b64url([
         `From: ${GMAIL_SENDER}`,
         `To: ${to}`,
         `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
         "MIME-Version: 1.0",
-        `Content-Type: multipart/mixed; boundary="${boundary}"`,
-        "",
-        `--${boundary}`,
-        "Content-Type: text/plain; charset=utf-8",
+        "Content-Type: text/html; charset=utf-8",
         "Content-Transfer-Encoding: base64",
         "",
-        chunkBase64(btoa(unescape(encodeURIComponent(body)))),
-        "",
-        `--${boundary}`,
-        `Content-Type: application/pdf; name="${pdfFilename}"`,
-        "Content-Transfer-Encoding: base64",
-        `Content-Disposition: attachment; filename="${pdfFilename}"`,
-        "",
-        chunkBase64(pdfBase64),
-        "",
-        `--${boundary}--`
-      ].join("\r\n");
-      return b64url(parts);
+        btoa(unescape(encodeURIComponent(fullHtml)))
+      ].join("\r\n"));
     }
 
-    async function sendGmail(to, subject, body, pdfBase64, pdfFilename) {
+    async function sendGmailHtml(to, subject, htmlBody) {
       const token = await getGmailToken();
-      const raw   = buildMimeWithPdf(to, subject, body, pdfBase64, pdfFilename);
+      const raw   = buildHtmlMime(to, subject, htmlBody);
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
         headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
@@ -173,7 +164,7 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    /* ── API Google Gemini Sécurisée contre la charge (503 / 429) ── */
+    /* ── API Google Gemini ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetryNotify = null) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
@@ -185,7 +176,7 @@
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
       let attempt = 0;
-      const maxAttempts = 30; // Solidité maximale contre le serveur saturé
+      const maxAttempts = 30; // Solidité maximale
       let backoffDelay = 4000;
 
       while (attempt < maxAttempts) {
@@ -199,7 +190,7 @@
           if (res.status === 429 || res.status === 503) {
             attempt++;
             if (attempt >= maxAttempts) throw new Error(`Google est saturé (${res.status}). Veuillez réessayer plus tard.`);
-            if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Pause de ${Math.round(backoffDelay / 1000)}s...`);
+            if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Tentative ${attempt}/${maxAttempts} dans ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
             backoffDelay = Math.min(backoffDelay * 1.5, 30000);
             continue;
@@ -230,79 +221,83 @@
       });
     }
 
-    /* ── PARSEUR JSON SÉCURISÉ (LE CORRECTIF D'EMMA ROUSSEL) ── */
+    /* ── PARSEUR JSON INVINCIBLE ── */
     function safeJSONParse(rawText) {
+      let text = rawText.trim();
+      if (text.startsWith('```json')) text = text.replace(/^```json/i, '').replace(/```$/, '').trim();
+      else if (text.startsWith('```')) text = text.replace(/^```/, '').replace(/```$/, '').trim();
+
       try {
-        let cleanRaw = rawText.trim();
-        if (cleanRaw.startsWith('```json')) cleanRaw = cleanRaw.replace(/^```json/i, '').replace(/```$/, '').trim();
-        else if (cleanRaw.startsWith('```')) cleanRaw = cleanRaw.replace(/^```/, '').replace(/```$/, '').trim();
-
-        // ÉCRASEMENT DES SAUTS DE LIGNE ET CARACTÈRES DE CONTRÔLE
-        // C'est ce nettoyage qui empêche l'erreur "Bad control character" si l'IA appuie sur Entrée dans son JSON.
-        cleanRaw = cleanRaw.replace(/[\r\n]+/g, ' '); 
-        cleanRaw = cleanRaw.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
-
-        return JSON.parse(cleanRaw);
-      } catch (error) {
-        console.error("Erreur de parsing JSON :", error, rawText);
-        throw new Error("L'IA a renvoyé un format illisible. Essayez de relancer.");
+        // Tentative nominale
+        return JSON.parse(text);
+      } catch (e) {
+        // RÉPARATION DE CHOC : L'IA a cassé le JSON. On le répare de force.
+        // 1. On supprime les retours à la ligne physiques qui corrompent les chaînes
+        text = text.replace(/[\r\n]+/g, ' ');
+        // 2. On supprime les caractères de contrôle invisibles
+        text = text.replace(/[\x00-\x1F]/g, '');
+        // 3. On double les antislashs qui ne font pas partie de la syntaxe JSON valide (Magie anti-LaTeX cassé)
+        text = text.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+        
+        try {
+          return JSON.parse(text);
+        } catch (fatalError) {
+          console.error("Échec de la réparation JSON :", fatalError, text);
+          throw new Error("L'IA a renvoyé un format illisible. Essayez de relancer.");
+        }
       }
     }
 
-    /* ── PARSEUR LATEX ROBUSTE (Rendu Mathématique Optimal) ── */
+    /* ── PARSEUR LATEX ROBUSTE (Inspiré de l'excellence de Claude) ── */
     function latexToHtml(src) {
-      if (!src) return "";
-      if (!window.katex) return `<pre>${src}</pre>`;
+      if (!window.katex || !src) return `<pre style="white-space:pre-wrap">${src || ""}</pre>`;
 
-      // Remplacement immédiat des tableaux pour KaTeX
-      let text = src.replace(/\\begin\{tabular\}(\{[^}]*\})?/g, '\\begin{array}$1')
+      function renderKaTeX(m, display) {
+        try {
+          return window.katex.renderToString(m.trim(), { displayMode: display, throwOnError: false, strict: false });
+        } catch(e) {
+          return display ? `<div style="color:#dc2626; text-align:center;">$$${m}$$</div>` : `<span style="color:#dc2626;">$${m}$</span>`;
+        }
+      }
+
+      // 1. Sauvetage des Tableaux
+      let html = src.replace(/\\begin\{tabular\}(\{[^}]*\})?/g, '\\begin{array}$1')
                     .replace(/\\end\{tabular\}/g, '\\end{array}');
 
-      const mathBlocks = [];
+      // 2. Conversion mathématique directe (sans placeholders temporaires fragiles)
+      const RE_DISPLAY_1 = /\\\[([\s\S]+?)\\\]/g;
+      const RE_DISPLAY_2 = /\$\$([\s\S]+?)\$\$/g;
+      const RE_INLINE_1  = /\\\(([\s\S]+?)\\\)/g;
+      const RE_INLINE_2  = /\$([^\$\n]+?)\$/g; // Sécurité contre les sauts de lignes accidentels dans inline
 
-      // Isoler toutes les expressions mathématiques
-      text = text.replace(/\$\$([\s\S]+?)\$\$/g, (m, eq) => { mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
-      text = text.replace(/\\\[([\s\S]+?)\\\]/g, (m, eq) => { mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
-      text = text.replace(/\\(([\s\S]+?)\\)/g, (m, eq) => { mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
-      text = text.replace(/\$([^\$\n]+?)\$/g, (m, eq) => { mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
-      text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases)\}([\s\S]*?)\\end\{\1\}/g, (m) => { mathBlocks.push({ mode: 'display', eq: m }); return `__MATH_${mathBlocks.length - 1}__`; });
+      html = html
+        .replace(RE_DISPLAY_1, (_, m) => `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${renderKaTeX(m, true)}</div>`)
+        .replace(RE_DISPLAY_2, (_, m) => `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${renderKaTeX(m, true)}</div>`)
+        .replace(RE_INLINE_1, (_, m) => renderKaTeX(m, false))
+        .replace(RE_INLINE_2, (_, m) => renderKaTeX(m, false));
 
-      // Formatage du texte brut (Markdown de base)
-      text = text
-        .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
-        .replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>')
-        .replace(/\\underline\{([^}]+)\}/g, '<u>$1</u>')
-        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:28px; margin-bottom:14px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
-        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:20px; margin-bottom:10px;">$1</h3>')
-        .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) => `<ol style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s*/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
-        .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) => `<ul style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s*/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
-        .replace(/\\newline/g, '<br/>')
-        .replace(/\n\n/g, '</p><p style="margin:12px 0; line-height:1.7;">')
-        .replace(/\n/g, '<br/>');
+      // 3. Application du formatage texte (Markdown)
+      html = html
+        .replace(/\\textbf\{([^}]+)\}/g, "<strong>$1</strong>")
+        .replace(/\\textit\{([^}]+)\}/g, "<em>$1</em>")
+        .replace(/\\underline\{([^}]+)\}/g, "<u>$1</u>")
+        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:24px; margin-bottom:12px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
+        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:16px; margin-bottom:8px;">$1</h3>')
+        .replace(/\\subsubsection\*?\{([^}]+)\}/g, '<h4 style="font-size:12pt; color:#4b5563; margin-top:12px; margin-bottom:4px;">$1</h4>')
+        .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, b) => `<ol style="padding-left:24px; margin:8px 0;">${b.replace(/\\item\s+/g, "<li>").replace(/<li>([^<]*)/g, "<li>$1</li>")}</ol>`)
+        .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, b) => `<ul style="padding-left:24px; margin:8px 0;">${b.replace(/\\item\s+/g, "<li>").replace(/<li>([^<]*)/g, "<li>$1</li>")}</ul>`)
+        .replace(/\\newline/g, "<br/>")
+        .replace(/\\\\(\[[\d.]+pt\])?/g, "<br/>")
+        .replace(/\n\n/g, '</p><p style="margin:8px 0; line-height:1.7;">')
+        .replace(/\n/g, "<br/>");
 
-      // Ré-injection des mathématiques
-      text = text.replace(/__MATH_(\d+)__/g, (match, idx) => {
-        const block = mathBlocks[idx];
-        try {
-          if (block.mode === 'display') {
-            return `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${window.katex.renderToString(block.eq, { displayMode: true, throwOnError: false, strict: false })}</div>`;
-          } else {
-            return window.katex.renderToString(block.eq, { displayMode: false, throwOnError: false, strict: false });
-          }
-        } catch(e) {
-          return `<span style="color:#dc2626; font-weight:bold;">[Erreur LaTeX: $${block.eq}$]</span>`;
-        }
-      });
-
-      return '<p style="margin:12px 0; line-height:1.7; font-size:15px;">' + text + '</p>';
+      return `<p style="margin:8px 0; line-height:1.7;">${html}</p>`;
     }
 
-    /* ── UI Components ── */
     function Card({ children }) { return <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"1.25rem", marginBottom:"1rem", boxShadow:"0 1px 2px rgba(0,0,0,0.05)" }}>{children}</div>; }
     function Field({ label, children }) { return <div style={{ marginBottom:12 }}><span style={{ display:"block", fontSize:13, fontWeight:500, color:"#374151", marginBottom:6 }}>{label}</span>{children}</div>; }
     function SectionHead({ title, right }) { return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}><span style={{ fontSize:15, fontWeight:600 }}>{title}</span>{right}</div>; }
 
-    /* ── SessionManager ── */
     function SessionManager({ onSelect }) {
       const [sessions, setSessions] = useState(() => getAllSessions());
       const [newName,  setNewName]  = useState("");
@@ -362,7 +357,6 @@
       return <Devoir sessionId={sessionId} sessionName={sessionName} onBack={()=>{ setSessionId(null); setSessionName(""); }}/>;
     }
 
-    /* ── DEVOIR APP ── */
     function Devoir({ sessionId, sessionName, onBack }) {
       const load = (key, fallback) => { const s=getSession(sessionId); return s[key]!==undefined?s[key]:fallback; };
       const persist = (key, val) => { const s=getSession(sessionId); s[key]=val; saveSession(sessionId, {...getAllSessions()[sessionId],...s,[key]:val}); };
@@ -373,13 +367,11 @@
       const [busy, setBusy] = useState(false);
       const [status, setStatus] = useState("");
       const [progress, setProgress] = useState(0); 
-      const [libsOk, setLibsOk] = useState({ h2c: !!window.html2canvas, jspdf: !!window.jspdf });
 
       useEffect(()=>{ try{localStorage.setItem("prof_maths_gemini_apikey",apiKey);}catch{} },[apiKey]);
       const setModelChoice = v => { setModelChoiceRaw(v); persist("modelChoice", v); };
       const setStep = v => { setStepRaw(v); persist("step",v); };
 
-      /* Etapes Datas */
       const [upSubPdf, setUpSubPdf] = useState(null);
       const [upSubPdfName, setUpSubPdfNameRaw] = useState(() => load("upSubPdfName", ""));
       const setUpSubPdfName = v => { setUpSubPdfNameRaw(v); persist("upSubPdfName",v); };
@@ -400,10 +392,6 @@
 
       const [mailsDone, setMailsDoneRaw] = useState(() => load("mailsDone", false));
       const setMailsDone = v => { setMailsDoneRaw(v); persist("mailsDone",v); };
-
-      useEffect(()=>{
-        const t = setInterval(() => setLibsOk({ h2c:!!window.html2canvas, jspdf:!!window.jspdf }), 500); return () => clearInterval(t);
-      },[]);
 
       const students = parseStudents(studentsRaw);
       const validCorrs = corrections.filter(c=>!c.skipped);
@@ -533,11 +521,8 @@ Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL 
             while (count > 0) { setStatus(`Temporisation (${count}s) avant ${s.name}...`); await delay(1000); count--; }
           }
 
-          const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Entoure TOUTES les équations avec $...$ dans les remarques. Pour les tableaux, utilise EXCLUSIVEMENT \\begin{array} entouré de $$.
-
-RÈGLES ABSOLUES ET VITALES POUR LE JSON :
-1. Tu DOIS IMPÉRATIVEMENT doubler tous les antislashs des commandes mathématiques (ex: \\\\frac au lieu de \\frac).
-2. INTERDICTION FORMELLE de faire des retours à la ligne dans tes textes. Rédige tout sur une ligne continue.`;
+          // Instructions simplifiées sans manipulation complexe du JSON, faisant confiance à la robustesse native
+          const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Entoure TOUTES les équations avec $...$ dans tes remarques. Pour les tableaux, utilise EXCLUSIVEMENT \\begin{array} entouré de $$. N'utilise jamais \\begin{tabular}. Renvoie impérativement un JSON pur.`;
           
           const promptText = `
 CORRIGÉ OFFICIEL :
@@ -553,7 +538,7 @@ FORMAT JSON STRICT ATTENDU :
   "note": 14.5,
   "reviewNeeded": false,
   "appreciation": "${s.name.split(" ")[0]}, ton raisonnement est bon, mais attention...",
-  "details": [ { "exercice": "Ex 1 - Q1.a", "sur": 2.0, "obtenu": 1.5, "remarque": "La factorisation est correcte jusqu'à l'avant-dernière ligne, mais tu as fait une erreur de signe : $2x-4=0 \\\\implies x=2$." } ],
+  "details": [ { "exercice": "Ex 1 - Q1.a", "sur": 2.0, "obtenu": 1.5, "remarque": "La factorisation est correcte jusqu'à l'avant-dernière ligne, mais tu as fait une erreur de signe : $2x-4=0 \\implies x=2$." } ],
   "conseil": "Relis tes formules de dérivation."
 }`;
 
@@ -588,111 +573,49 @@ FORMAT JSON STRICT ATTENDU :
           const prenom = c.name.split(" ")[0];
           const appreciation = (c.appreciation||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
           const conseil = (c.conseil||"").replace(/il\/elle/gi,"tu").replace(/l'élève/gi,"tu").replace(new RegExp(c.name,"gi"), prenom);
-          const body = `Bonjour ${prenom},\n\nVoici ton résultat pour le devoir de mathématiques "${sessionName}".\n\nTu trouveras en pièce jointe ton bilan personnalisé et le corrigé détaillé.\n\nCordialement,`;
-          let pdfB64 = null;
-
-          // LE CORRECTIF POUR L'ENVOI À 0% EST ICI :
-          // Le canvas est ancré de force, mais rendu transparent pour le navigateur.
-          const hiddenDiv = document.createElement("div");
-          hiddenDiv.style.position = "fixed"; 
-          hiddenDiv.style.top = "0px"; 
-          hiddenDiv.style.left = "0px"; 
-          hiddenDiv.style.zIndex = "-10000";
-          hiddenDiv.style.opacity = "0.001";
-          hiddenDiv.style.pointerEvents = "none";
-          hiddenDiv.style.width = "800px";
-          hiddenDiv.style.background = "#ffffff"; 
-          hiddenDiv.style.color = "#111827"; 
-          hiddenDiv.style.fontFamily = "system-ui, sans-serif";
+          const subject = `Bilan de Mathématiques - ${sessionName}`;
           
-          try {
-            const appendBlock = (htmlContent, padding="20px 40px") => {
-              const block = document.createElement("div"); block.className = "pdf-block"; block.style.padding = padding;
-              block.innerHTML = htmlContent; hiddenDiv.appendChild(block);
-            };
+          let htmlBody = `
+            <h1>Bilan personnalisé : ${c.name}</h1>
+            <p style="font-size:24px; font-weight:bold; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</p>
+            <p><strong>Appréciation :</strong><br/> ${latexToHtml(appreciation)}</p>
+            <h2 style="font-size:18px; color:#374151; margin-top:24px;">Détail par exercice</h2>
+          `;
 
-            appendBlock(`
-              <div style="border-bottom: 2px solid #e5e7eb; padding-bottom: 15px;">
-                <h1 style="font-size:34px; margin:0 0 10px 0; color:#1e3a8a;">Bilan et Corrigé</h1>
-                <h2 style="font-size:24px; margin:0 0 10px 0; color:#4b5563;">Élève : ${c.name}</h2>
-                <h2 style="font-size:28px; margin:0; color:${!isNaN(+c.note) && +c.note >= 10 ? '#16a34a' : '#dc2626'};">Note : ${c.note}/20</h2>
-              </div>
-            `, "40px 40px 10px 40px");
-
-            if (appreciation) appendBlock(`<div style="font-size:17px; line-height:1.6;"><strong>Appréciation :</strong><br/> ${latexToHtml(appreciation)}</div>`, "10px 40px");
-
-            const detailsHtml = (c.details||[]).map(d => 
-              `<div style="margin-bottom: 12px; padding: 14px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;">
+          (c.details||[]).forEach(d => {
+            htmlBody += `
+              <div class="details-box">
                 <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-                  <b style="color: #1d4ed8; font-size: 18px;">${d.exercice}</b>
-                  <span style="font-weight: 700; font-size: 18px;">${d.obtenu}/${d.sur}</span>
+                  <b style="color: #1d4ed8; font-size: 16px;">${d.exercice}</b>
+                  <span style="font-weight: 700; font-size: 16px;">${d.obtenu}/${d.sur}</span>
                 </div>
                 ${d.remarque ? `<div style="color: #374151; border-top:1px dashed #d1d5db; padding-top:8px;">${latexToHtml(d.remarque)}</div>` : ''}
-              </div>`
-            ).join("");
+              </div>
+            `;
+          });
 
-            appendBlock(`<div style="background: #f9fafb; padding: 20px; border-radius: 8px;"><h3 style="margin-top:0; font-size:20px;">Détail par exercice</h3>${detailsHtml}</div>`, "15px 40px");
-            if (conseil) appendBlock(`<div style="font-size:17px; line-height:1.6; padding: 16px; background: #eff6ff; border-left: 4px solid #3b82f6;"><strong>Conseil :</strong><br/> ${latexToHtml(conseil)}</div>`, "10px 40px");
-            
-            appendBlock(`<div style="border-top: 2px solid #e5e7eb; padding-top: 20px;"><h3 style="margin-top:0; font-size:24px; color:#1e3a8a;">Corrigé détaillé de l'épreuve</h3></div>`, "20px 40px 10px 40px");
-
-            const tempCorr = document.createElement("div");
-            tempCorr.innerHTML = c.latexCorrection ? latexToHtml(c.latexCorrection) : '<p>Aucun corrigé.</p>';
-            
-            Array.from(tempCorr.childNodes).forEach(node => {
-              if (node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) return;
-              const block = document.createElement("div"); block.className = "pdf-block"; block.style.padding = "4px 40px";
-              if (node.nodeType === Node.TEXT_NODE) block.textContent = node.textContent; else block.appendChild(node.cloneNode(true));
-              hiddenDiv.appendChild(block);
-            });
-            
-            document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 400)); // Laisse KaTeX afficher sereinement
-
-            const {jsPDF} = window.jspdf;
-            const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
-            const W = pdf.internal.pageSize.getWidth(), H = pdf.internal.pageSize.getHeight(), m = 15, iw = W - m*2;
-            let currentY = m;
-            
-            const blocks = Array.from(hiddenDiv.querySelectorAll('.pdf-block'));
-            for (let i = 0; i < blocks.length; i++) {
-              const b = blocks[i];
-              if (!b.innerText.trim() && !b.querySelector('.katex')) continue;
-              
-              const canvas = await window.html2canvas(b, {scale: 2.5, useCORS: true, backgroundColor: "#ffffff"}); 
-              const imgH = (canvas.height * iw) / canvas.width;
-              
-              if (currentY + imgH > H - m && currentY > m + 10) { pdf.addPage(); currentY = m; }
-              
-              if (imgH > H - 2*m) {
-                let remaining = imgH, srcY = 0; const ratio = canvas.width / iw;
-                while(remaining > 0) {
-                  const sliceH = Math.min(remaining, H - currentY - m);
-                  const sc = document.createElement("canvas"); sc.width = canvas.width; sc.height = sliceH * ratio;
-                  sc.getContext("2d").drawImage(canvas, 0, srcY, canvas.width, sliceH * ratio, 0, 0, sc.width, sc.height);
-                  pdf.addImage(sc.toDataURL("image/jpeg", 0.98), "JPEG", m, currentY, iw, sliceH, undefined, 'FAST');
-                  remaining -= sliceH; srcY += sliceH * ratio; currentY += sliceH;
-                  if (remaining > 0) { pdf.addPage(); currentY = m; }
-                }
-              } else {
-                pdf.addImage(canvas.toDataURL("image/jpeg", 0.98), "JPEG", m, currentY, iw, imgH, undefined, 'FAST');
-                currentY += imgH;
-              }
-            }
-            pdfB64 = uint8ToBase64(new Uint8Array(pdf.output("arraybuffer")));
-          } catch(e) { 
-            console.error("Erreur PDF :", e); 
-          } finally {
-            if (document.body.contains(hiddenDiv)) document.body.removeChild(hiddenDiv);
+          if (conseil) {
+            htmlBody += `<div class="conseil"><strong>💡 Conseil :</strong><br/> ${latexToHtml(conseil)}</div>`;
           }
-          
+
+          htmlBody += `
+            <h2 style="font-size:20px; color:#1e3a8a; margin-top:32px; border-bottom:1px solid #1e3a8a; padding-bottom:8px;">Corrigé détaillé de l'épreuve</h2>
+            <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
+              ${c.latexCorrection ? latexToHtml(c.latexCorrection) : '<p>Aucun corrigé disponible.</p>'}
+            </div>
+            <p style="margin-top:24px; color:#6b7280; font-size:12px;">Cet e-mail a été généré automatiquement.</p>
+          `;
+
           try { 
-            if (pdfB64) await sendGmail(c.email, sessionName, body, pdfB64, `Bilan_Maths_${prenom}.pdf`); 
-            else throw new Error("PDF null");
-          } catch(e) { errors.push(c.name); }
+            // ENVOI DIRECT DU HTML (Plus de PDF, plus de plantage de navigateur)
+            await sendGmailHtml(c.email, subject, htmlBody);
+          } catch(e) { 
+            errors.push(c.name); 
+          }
         }
+        
         setProgress(100); setMailsDone(true); setBusy(false);
-        setStatus(errors.length ? `⚠️ Échec envois : ${errors.join(", ")}` : "✅ Mails envoyés !");
+        setStatus(errors.length ? `⚠️ Échec envois : ${errors.join(", ")}` : "✅ Mails envoyés avec succès !");
       };
 
       return (
@@ -889,11 +812,11 @@ FORMAT JSON STRICT ATTENDU :
                 {mailsDone ? (
                   <div style={{ textAlign:"center", padding:24, background:"#f0fdf4", border:"1px solid #86efac", borderRadius:12, color:"#166534" }}>
                     <div style={{ fontSize:40, marginBottom:12 }}>🚀</div>
-                    <div style={{ fontSize:18, fontWeight:600 }}>Tous les PDF personnalisés ont été envoyés !</div>
+                    <div style={{ fontSize:18, fontWeight:600 }}>Tous les e-mails contenant le bilan HTML ont été envoyés !</div>
                   </div>
                 ) : (
                   <button disabled={busy} onClick={sendResults} style={{ width:"100%", padding:"16px", background:"#2563eb", fontSize:16, fontWeight:600 }}>
-                    {busy ? "Génération des PDF et envois..." : "📧 Créer les PDF HD et Envoyer par Gmail"}
+                    {busy ? "Génération HTML et envois en cours..." : "📧 Envoyer les Bilans HTML par Gmail"}
                   </button>
                 )}
               </div>
