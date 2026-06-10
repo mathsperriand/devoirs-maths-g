@@ -42,6 +42,7 @@
     const { useState, useCallback, useEffect, useRef } = React;
     const STEPS = ["📝 Sujet", "👥 Élèves", "🎯 Corrigé & Barème", "✏️ Correction", "📬 Résultats"];
 
+    /* ── Gmail OAuth & Utilities ── */
     const GMAIL_CLIENT_ID = "3675385834-a42o3cc2lmpasjd8hf23o0jiu6ebbkah.apps.googleusercontent.com";
     const GMAIL_SENDER    = "maths.perriand@gmail.com";
     const GMAIL_SCOPE     = "https://www.googleapis.com/auth/gmail.send";
@@ -155,6 +156,7 @@
       }
     }
 
+    /* ── Gestionnaire de sessions ── */
     const ROOT = "prof_maths_sessions";
     const ACTIVE_KEY = "prof_maths_active";
 
@@ -171,6 +173,7 @@
 
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
+    /* ── API Google Gemini Sécurisée contre la charge (503 / 429) ── */
     async function callGemini(apiKey, parts, systemInstruction = null, jsonMode = false, model = "gemini-2.5-flash", onRetryNotify = null) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const body = { contents: [{ parts: parts }] };
@@ -182,8 +185,8 @@
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
 
       let attempt = 0;
-      const maxAttempts = 30; 
-      let backoffDelay = 5000;
+      const maxAttempts = 30; // Solidité maximale contre le serveur saturé
+      let backoffDelay = 4000;
 
       while (attempt < maxAttempts) {
         try {
@@ -196,9 +199,9 @@
           if (res.status === 429 || res.status === 503) {
             attempt++;
             if (attempt >= maxAttempts) throw new Error(`Google est saturé (${res.status}). Veuillez réessayer plus tard.`);
-            if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Tentative ${attempt}/${maxAttempts} dans ${Math.round(backoffDelay / 1000)}s...`);
+            if (onRetryNotify) onRetryNotify(`Google saturé (${res.status}). Pause de ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
-            backoffDelay = Math.min(backoffDelay * 1.5, 20000);
+            backoffDelay = Math.min(backoffDelay * 1.5, 30000);
             continue;
           }
 
@@ -212,7 +215,7 @@
             if (attempt >= maxAttempts) throw error;
             if (onRetryNotify) onRetryNotify(`Surcharge détectée. Reprise dans ${Math.round(backoffDelay / 1000)}s...`);
             await delay(backoffDelay);
-            backoffDelay = Math.min(backoffDelay * 1.5, 20000);
+            backoffDelay = Math.min(backoffDelay * 1.5, 30000);
             continue;
           }
           throw error;
@@ -227,76 +230,79 @@
       });
     }
 
-    /* ── PARSEUR JSON SÉCURISÉ ET NETTOYÉ ── */
+    /* ── PARSEUR JSON SÉCURISÉ (LE CORRECTIF D'EMMA ROUSSEL) ── */
     function safeJSONParse(rawText) {
       try {
         let cleanRaw = rawText.trim();
         if (cleanRaw.startsWith('```json')) cleanRaw = cleanRaw.replace(/^```json/i, '').replace(/```$/, '').trim();
-        else if (cleanRaw.startsWith('```')) cleanRaw = cleanRaw.replace(/^
-```/, '').replace(/```$/, '').trim();
+        else if (cleanRaw.startsWith('```')) cleanRaw = cleanRaw.replace(/^```/, '').replace(/```$/, '').trim();
 
-        try {
-          // Cas nominal : Le mode JSON de Gemini est parfaitement valide
-          return JSON.parse(cleanRaw);
-        } catch (e) {
-          // Secours uniquement en cas de sauts de ligne physiques accidentels
-          let repaired = cleanRaw.replace(/[\r\n]+/g, ' ');
-          return JSON.parse(repaired);
-        }
+        // ÉCRASEMENT DES SAUTS DE LIGNE ET CARACTÈRES DE CONTRÔLE
+        // C'est ce nettoyage qui empêche l'erreur "Bad control character" si l'IA appuie sur Entrée dans son JSON.
+        cleanRaw = cleanRaw.replace(/[\r\n]+/g, ' '); 
+        cleanRaw = cleanRaw.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+
+        return JSON.parse(cleanRaw);
       } catch (error) {
-        console.error("Erreur critique de parsing JSON :", error, rawText);
-        throw new Error("L'IA a renvoyé un format de données incorrect pour cet élève.");
+        console.error("Erreur de parsing JSON :", error, rawText);
+        throw new Error("L'IA a renvoyé un format illisible. Essayez de relancer.");
       }
     }
 
-    /* ── PARSEUR LATEX OPTIMISÉ POUR KATEX ── */
+    /* ── PARSEUR LATEX ROBUSTE (Rendu Mathématique Optimal) ── */
     function latexToHtml(src) {
       if (!src) return "";
       if (!window.katex) return `<pre>${src}</pre>`;
 
+      // Remplacement immédiat des tableaux pour KaTeX
       let text = src.replace(/\\begin\{tabular\}(\{[^}]*\})?/g, '\\begin{array}$1')
                     .replace(/\\end\{tabular\}/g, '\\end{array}');
 
       const mathBlocks = [];
 
+      // Isoler toutes les expressions mathématiques
       text = text.replace(/\$\$([\s\S]+?)\$\$/g, (m, eq) => { mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
       text = text.replace(/\\\[([\s\S]+?)\\\]/g, (m, eq) => { mathBlocks.push({ mode: 'display', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
       text = text.replace(/\\(([\s\S]+?)\\)/g, (m, eq) => { mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
       text = text.replace(/\$([^\$\n]+?)\$/g, (m, eq) => { mathBlocks.push({ mode: 'inline', eq }); return `__MATH_${mathBlocks.length - 1}__`; });
       text = text.replace(/\\begin\{(aligned|array|pmatrix|bmatrix|vmatrix|cases)\}([\s\S]*?)\\end\{\1\}/g, (m) => { mathBlocks.push({ mode: 'display', eq: m }); return `__MATH_${mathBlocks.length - 1}__`; });
 
+      // Formatage du texte brut (Markdown de base)
       text = text
         .replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>')
         .replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>')
         .replace(/\\underline\{([^}]+)\}/g, '<u>$1</u>')
-        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:24px; margin-bottom:12px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
-        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:16px; margin-bottom:8px;">$1</h3>')
+        .replace(/\\section\*?\{([^}]+)\}/g, '<h2 style="font-size:16pt; color:#1d4ed8; margin-top:28px; margin-bottom:14px; border-bottom:1px solid #bfdbfe; padding-bottom:6px;">$1</h2>')
+        .replace(/\\subsection\*?\{([^}]+)\}/g, '<h3 style="font-size:14pt; color:#374151; margin-top:20px; margin-bottom:10px;">$1</h3>')
         .replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_, body) => `<ol style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s*/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ol>`)
         .replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_, body) => `<ul style="padding-left:24px; margin:12px 0;">${body.replace(/\\item\s*/g,'<li>').replace(/<li>([^<]*)/g,'<li>$1</li>')}</ul>`)
         .replace(/\\newline/g, '<br/>')
         .replace(/\n\n/g, '</p><p style="margin:12px 0; line-height:1.7;">')
         .replace(/\n/g, '<br/>');
 
+      // Ré-injection des mathématiques
       text = text.replace(/__MATH_(\d+)__/g, (match, idx) => {
         const block = mathBlocks[idx];
         try {
           if (block.mode === 'display') {
-            return `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${window.katex.renderToString(block.eq, { displayMode: true, throwOnError: false })}</div>`;
+            return `<div class="math-block-container" style="overflow-x:auto; text-align:center;">${window.katex.renderToString(block.eq, { displayMode: true, throwOnError: false, strict: false })}</div>`;
           } else {
-            return window.katex.renderToString(block.eq, { displayMode: false, throwOnError: false });
+            return window.katex.renderToString(block.eq, { displayMode: false, throwOnError: false, strict: false });
           }
         } catch(e) {
-          return `<span style="color:#dc2626; font-style:italic;">[Erreur LaTeX: $${block.eq}$]</span>`;
+          return `<span style="color:#dc2626; font-weight:bold;">[Erreur LaTeX: $${block.eq}$]</span>`;
         }
       });
 
       return '<p style="margin:12px 0; line-height:1.7; font-size:15px;">' + text + '</p>';
     }
 
+    /* ── UI Components ── */
     function Card({ children }) { return <div style={{ background:"#fff", border:"0.5px solid #e5e7eb", borderRadius:10, padding:"1.25rem", marginBottom:"1rem", boxShadow:"0 1px 2px rgba(0,0,0,0.05)" }}>{children}</div>; }
     function Field({ label, children }) { return <div style={{ marginBottom:12 }}><span style={{ display:"block", fontSize:13, fontWeight:500, color:"#374151", marginBottom:6 }}>{label}</span>{children}</div>; }
     function SectionHead({ title, right }) { return <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}><span style={{ fontSize:15, fontWeight:600 }}>{title}</span>{right}</div>; }
 
+    /* ── SessionManager ── */
     function SessionManager({ onSelect }) {
       const [sessions, setSessions] = useState(() => getAllSessions());
       const [newName,  setNewName]  = useState("");
@@ -356,6 +362,7 @@
       return <Devoir sessionId={sessionId} sessionName={sessionName} onBack={()=>{ setSessionId(null); setSessionName(""); }}/>;
     }
 
+    /* ── DEVOIR APP ── */
     function Devoir({ sessionId, sessionName, onBack }) {
       const load = (key, fallback) => { const s=getSession(sessionId); return s[key]!==undefined?s[key]:fallback; };
       const persist = (key, val) => { const s=getSession(sessionId); s[key]=val; saveSession(sessionId, {...getAllSessions()[sessionId],...s,[key]:val}); };
@@ -372,6 +379,7 @@
       const setModelChoice = v => { setModelChoiceRaw(v); persist("modelChoice", v); };
       const setStep = v => { setStepRaw(v); persist("step",v); };
 
+      /* Etapes Datas */
       const [upSubPdf, setUpSubPdf] = useState(null);
       const [upSubPdfName, setUpSubPdfNameRaw] = useState(() => load("upSubPdfName", ""));
       const setUpSubPdfName = v => { setUpSubPdfNameRaw(v); persist("upSubPdfName",v); };
@@ -443,22 +451,22 @@
 
       const generateMasterKey = async () => {
         if (!upSubPdf || !apiKey) return;
-        setBusy(true); setStatus("Génération du corrigé officiel...");
+        setBusy(true); setStatus("Génération du corrigé officiel (Formatage Mathématique Optimal)...");
         try {
           const parts = [
             { inlineData: { mimeType: "application/pdf", data: upSubPdf } },
-            { text: "Résous ce sujet de mathématiques de manière complète et structurée. Détaille toutes les étapes." }
+            { text: "Résous ce sujet de mathématiques de manière exhaustive. Dédaille chaque étape de calcul." }
           ];
           const sysInstruction = `Tu es un professeur de mathématiques. Rédige un corrigé parfait, structuré et détaillé.
-RÈGLES DE FORMATAGE :
+RÈGLES DE FORMATAGE (CRITIQUE) :
 - Structure avec \\section*{Exercice X} et \\subsection*{Question Y}.
-- Isole les équations importantes sur leur propre ligne avec les balises $$...$$ (Display mode).
-- Utilise $...$ pour les formules intégrées au texte.
-- Pour les tableaux de signes, de variations ou les matrices, utilise EXCLUSIVEMENT l'environnement mathématique \\begin{array}...\\end{array} entouré de $$...$$. N'utilise pas \\begin{tabular}.`;
+- Isole TOUTES les équations sur leur propre ligne avec les balises $$...$$ (Display mode).
+- Utilise $...$ pour les petites formules.
+- N'utilise JAMAIS l'environnement \\begin{tabular}. Pour les tableaux de signes, de variations ou les arbres de probabilités, utilise EXCLUSIVEMENT l'environnement mathématique \\begin{array} et entoure-le toujours de $$...$$.`;
           
           const raw = await callGemini(apiKey, parts, sysInstruction, false, modelChoice, msg => setStatus(`[Génération Corrigé] ${msg}`));
           setMasterCorrection(raw);
-          setStatus("✅ Corrigé de référence généré !");
+          setStatus("✅ Corrigé de référence généré avec succès !");
         } catch(e) { setStatus("❌ Erreur : " + e.message); }
         setBusy(false);
       };
@@ -475,10 +483,10 @@ RÈGLES DE FORMATAGE :
         let pageMapping = [];
         try {
           const studentList = students.map(s => `- ${s.name}`).join("\n");
-          const mappingPrompt = `Voici un document PDF scanné contenant plusieurs copies.
-LISTE DES ÉLÈVES ATTEINDUS :
+          const mappingPrompt = `Voici un document PDF scanné.
+LISTE DES ÉLÈVES :
 ${studentList}
-Détermine l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL tableau JSON pur :
+Identifie l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL tableau JSON pur :
 [ { "name": "Nom de l'élève", "pageStart": 1, "pageEnd": 2 } ]`;
           const rawMapping = await callGemini(apiKey, [{ inlineData: { mimeType: "application/pdf", data: mergedB64 } }, { text: mappingPrompt }], "JSON pur.", true, modelChoice, msg => setStatus(`[Cartographie] ${msg}`));
           pageMapping = safeJSONParse(rawMapping);
@@ -498,7 +506,7 @@ Détermine l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL
           const mapData = pageMapping.find(m => m.name && m.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase()));
           
           if (!mapData || !mapData.pageStart) {
-            results.push({...s, skipped: true, note: "?", appreciation: "Copie introuvable dans le lot.", details: []});
+            results.push({...s, skipped: true, note: "?", appreciation: "Copie introuvable.", details: []});
             continue;
           }
 
@@ -525,27 +533,28 @@ Détermine l'intervalle de pages de la copie de chaque élève. Retourne UN SEUL
             while (count > 0) { setStatus(`Temporisation (${count}s) avant ${s.name}...`); await delay(1000); count--; }
           }
 
-          const sysInstruction = `Tu es un professeur de mathématiques et un correcteur rigoureux. Tutoie l'élève.
-Évalue la copie en fonction du corrigé officiel et du barème fourni.
-Rédige tes remarques, appréciations et conseils en utilisant le format LaTeX standard pour toutes les expressions mathématiques (ex: $x = 3$, $\\frac{1}{2}$, $\\times$).
-Pour les tableaux, utilise EXCLUSIVEMENT l'environnement $$\\begin{array}...\\end{array}$$.
-Tu devez impérativement renvoyer un objet JSON valide correspondant exactement à la structure demandée.`;
+          const sysInstruction = `Tu es un correcteur intransigeant mais bienveillant. Tutoie l'élève. Utilise le corrigé de référence. Entoure TOUTES les équations avec $...$ dans les remarques. Pour les tableaux, utilise EXCLUSIVEMENT \\begin{array} entouré de $$.
+
+RÈGLES ABSOLUES ET VITALES POUR LE JSON :
+1. Tu DOIS IMPÉRATIVEMENT doubler tous les antislashs des commandes mathématiques (ex: \\\\frac au lieu de \\frac).
+2. INTERDICTION FORMELLE de faire des retours à la ligne dans tes textes. Rédige tout sur une ligne continue.`;
           
           const promptText = `
-CORRIGÉ OFFICIEL DE RÉFÉRENCE :
+CORRIGÉ OFFICIEL :
 ${masterCorrection}
 
-DIRECTIVES ET BARÈME DE NOTATION :
+DIRECTIVES ET BARÈME :
 ${userDirectives || "Applique un barème classique sur 20."}
 
-TÂCHE : Examine la copie de ${s.name}. Évalue-la STRICTEMENT.
-Remplis le format JSON suivant de manière détaillée :
+TÂCHE : Voici la copie de ${s.name}. Évalue-la STRICTEMENT sur le corrigé et les directives.
+SOIS EXTRÊMEMENT DÉTAILLÉ dans tes remarques pour CHAQUE sous-question (1.a, 1.b, etc.). Explique précisément où est l'erreur, calcule les points correspondants.
+FORMAT JSON STRICT ATTENDU :
 {
   "note": 14.5,
   "reviewNeeded": false,
-  "appreciation": "${s.name.split(" ")[0]}, ton raisonnement est solide mais...",
-  "details": [ { "exercice": "Exercice 1 - Q1", "sur": 2.0, "obtenu": 1.5, "remarque": "Erreur de signe : $2x = -4 \\\\implies x = -2$." } ],
-  "conseil": "Fais attention aux priorités opératoires."
+  "appreciation": "${s.name.split(" ")[0]}, ton raisonnement est bon, mais attention...",
+  "details": [ { "exercice": "Ex 1 - Q1.a", "sur": 2.0, "obtenu": 1.5, "remarque": "La factorisation est correcte jusqu'à l'avant-dernière ligne, mais tu as fait une erreur de signe : $2x-4=0 \\\\implies x=2$." } ],
+  "conseil": "Relis tes formules de dérivation."
 }`;
 
           try {
@@ -557,7 +566,7 @@ Remplis le format JSON suivant de manière détaillée :
             const parsed = safeJSONParse(raw);
             results.push({...s, ...parsed, latexCorrection: masterCorrection});
           } catch(e) {
-            results.push({...s, note:"?", appreciation:"Erreur de formatage : "+e.message, details:[], conseil:"", latexCorrection: masterCorrection});
+            results.push({...s, note:"?", appreciation:"Erreur IA : "+e.message, details:[], conseil:"", latexCorrection: masterCorrection});
           }
         }
 
@@ -582,6 +591,8 @@ Remplis le format JSON suivant de manière détaillée :
           const body = `Bonjour ${prenom},\n\nVoici ton résultat pour le devoir de mathématiques "${sessionName}".\n\nTu trouveras en pièce jointe ton bilan personnalisé et le corrigé détaillé.\n\nCordialement,`;
           let pdfB64 = null;
 
+          // LE CORRECTIF POUR L'ENVOI À 0% EST ICI :
+          // Le canvas est ancré de force, mais rendu transparent pour le navigateur.
           const hiddenDiv = document.createElement("div");
           hiddenDiv.style.position = "fixed"; 
           hiddenDiv.style.top = "0px"; 
@@ -636,7 +647,7 @@ Remplis le format JSON suivant de manière détaillée :
             });
             
             document.body.appendChild(hiddenDiv);
-            await new Promise(r => setTimeout(r, 400));
+            await new Promise(r => setTimeout(r, 400)); // Laisse KaTeX afficher sereinement
 
             const {jsPDF} = window.jspdf;
             const pdf = new jsPDF({orientation:"portrait", unit:"mm", format:"a4"});
@@ -670,18 +681,18 @@ Remplis le format JSON suivant de manière détaillée :
             }
             pdfB64 = uint8ToBase64(new Uint8Array(pdf.output("arraybuffer")));
           } catch(e) { 
-            console.error("Erreur génération PDF :", e); 
+            console.error("Erreur PDF :", e); 
           } finally {
             if (document.body.contains(hiddenDiv)) document.body.removeChild(hiddenDiv);
           }
           
           try { 
             if (pdfB64) await sendGmail(c.email, sessionName, body, pdfB64, `Bilan_Maths_${prenom}.pdf`); 
-            else throw new Error("Fichier PDF non généré");
+            else throw new Error("PDF null");
           } catch(e) { errors.push(c.name); }
         }
         setProgress(100); setMailsDone(true); setBusy(false);
-        setStatus(errors.length ? `⚠️ Échec envois : ${errors.join(", ")}` : "✅ Tous les e-mails ont été envoyés !");
+        setStatus(errors.length ? `⚠️ Échec envois : ${errors.join(", ")}` : "✅ Mails envoyés !");
       };
 
       return (
@@ -691,7 +702,7 @@ Remplis le format JSON suivant de manière détaillée :
               <h1 style={{ fontSize:20, marginBottom:4, color:"#111827" }}>{sessionName}</h1>
               <button style={{ background:"transparent", color:"#6b7280", border:"none", padding:0, fontSize:13 }} onClick={onBack}>← Retour aux devoirs</button>
             </div>
-            <div style={{ fontSize:12, color:"#16a34a", background:"#dcfce7", padding:"4px 10px", borderRadius:12 }}>Sauvegarde automatique active</div>
+            <div style={{ fontSize:12, color:"#16a34a", background:"#dcfce7", padding:"4px 10px", borderRadius:12 }}>Sauvegarde auto activée</div>
           </div>
 
           <Card>
@@ -699,11 +710,11 @@ Remplis le format JSON suivant de manière détaillée :
               <Field label="🔑 Clé API Google AI Studio">
                 <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="AIzaSy..." style={{ fontFamily:"monospace" }}/>
               </Field>
-              <Field label="🤖 Modèle de traitement">
+              <Field label="🤖 Modèle IA">
                 <select value={modelChoice} onChange={e => setModelChoice(e.target.value)}>
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommandé - Équilibré)</option>
-                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Rapide)</option>
-                  <option value="gemini-2.5-pro">Gemini 2.5 Pro (Précision supérieure)</option>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Super équilibre)</option>
+                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Ultra Rapide)</option>
+                  <option value="gemini-2.5-pro">Gemini 2.5 Pro (Lent - Très Analytique)</option>
                 </select>
               </Field>
             </div>
@@ -744,7 +755,7 @@ Remplis le format JSON suivant de manière détaillée :
           {step===0&&(
             <Card>
               <SectionHead title="Le Sujet de l'Évaluation"/>
-              <p style={{ fontSize:14, color:"#6b7280", marginBottom:16 }}>Déposez le fichier PDF du sujet original.</p>
+              <p style={{ fontSize:14, color:"#6b7280", marginBottom:16 }}>Déposez le fichier PDF du sujet. Il servira de base à l'IA pour générer le corrigé parfait à l'étape suivante.</p>
               <div onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();handleSubjectPdf(e.dataTransfer.files[0]);}} onClick={()=>document.getElementById("subj-pdf").click()}
                 style={{ border:"2px dashed #cbd5e1", borderRadius:12, padding:"3rem 2rem", textAlign:"center", cursor:"pointer", background:upSubPdf?"#f0fdf4":"#f8fafc", transition:"all 0.2s" }}>
                 <input id="subj-pdf" type="file" accept="application/pdf" style={{ display:"none" }} onChange={e=>handleSubjectPdf(e.target.files[0])}/>
@@ -757,40 +768,40 @@ Remplis le format JSON suivant de manière détaillée :
           {step===1&&(
             <Card>
               <SectionHead title="Les Copies des Élèves"/>
-              <p style={{ fontSize:14, color:"#6b7280", marginBottom:16 }}>Déposez le scan unique contenant les copies de la classe.</p>
+              <p style={{ fontSize:14, color:"#6b7280", marginBottom:16 }}>Déposez le PDF scanné de toute la classe. Le système extraira automatiquement les noms.</p>
               <div onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();addCopiesPdf(e.dataTransfer.files);}} onClick={()=>document.getElementById("copies-pdf").click()}
                 style={{ border:"2px dashed #cbd5e1", borderRadius:12, padding:"2rem", textAlign:"center", cursor:"pointer", marginBottom:16, background:copiesPdfs.length?"#f0fdf4":"#f8fafc" }}>
                 <input id="copies-pdf" type="file" accept="application/pdf" multiple style={{ display:"none" }} onChange={e=>{if(e.target.files.length)addCopiesPdf(e.target.files);}}/>
                 {copiesPdfs.length>0?<div style={{ color:"#16a34a", fontWeight:600 }}>✓ {copiesPdfs.length} fichier(s) PDF en mémoire</div>:
-                <div style={{ color:"#64748b" }}>📥 Déposez le PDF global des copies</div>}
+                <div style={{ color:"#64748b" }}>📥 Déposez le PDF des copies scannées</div>}
               </div>
-              <Field label="Liste des élèves détectés (Format : Nom, email) :">
-                <textarea value={studentsRaw} onChange={e=>setStudentsRaw(e.target.value)} placeholder="Nom Élève, email@etablissement.fr..." style={{ minHeight:150, fontFamily:"monospace", fontSize:13 }}/>
+              <Field label="Liste des élèves reconnus (Ajustez les emails si besoin) :">
+                <textarea value={studentsRaw} onChange={e=>setStudentsRaw(e.target.value)} placeholder="Nom, email@lycee.fr..." style={{ minHeight:150, fontFamily:"monospace", fontSize:13 }}/>
               </Field>
             </Card>
           )}
 
           {step===2&&(
             <Card>
-              <SectionHead title="Le Corrigé Officiel"/>
+              <SectionHead title="Le Corrigé de Référence (Pilotage de l'IA)"/>
               <div style={{ background:"#fffbeb", border:"1px solid #fde68a", padding:"12px 16px", borderRadius:8, fontSize:13, color:"#b45309", marginBottom:16 }}>
-                💡 Générer le corrigé verrouille la base mathématique commune à toute la classe pour éliminer les variations de notation.
+                💡 En générant un corrigé de référence une seule fois, vous garantissez l'homogénéité de la notation pour toute la classe et vous divisez par 5 votre consommation de tokens !
               </div>
 
               {!masterCorrection ? (
-                <button disabled={busy||!apiKey||!upSubPdf} onClick={generateMasterKey} style={{ width:"100%", background:"#4f46e5", padding:"14px", fontSize:15 }}>✨ Rédiger le corrigé type</button>
+                <button disabled={busy||!apiKey||!upSubPdf} onClick={generateMasterKey} style={{ width:"100%", background:"#4f46e5", padding:"14px", fontSize:15 }}>✨ Générer le corrigé officiel depuis le sujet</button>
               ) : (
                 <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
                   <div style={{ border:"1px solid #e5e7eb", borderRadius:8, background:"#f9fafb" }}>
                     <div style={{ padding:"10px 14px", background:"#e5e7eb", fontWeight:600, fontSize:13, borderTopLeftRadius:8, borderTopRightRadius:8, display:"flex", justifyContent:"space-between" }}>
-                      Aperçu du corrigé de référence
+                      Aperçu du corrigé généré par l'IA
                       <button onClick={generateMasterKey} style={{ background:"transparent", border:"none", color:"#4f46e5", padding:0, fontSize:12 }}>Regénérer 🔄</button>
                     </div>
                     <div style={{ padding:"16px", maxHeight:"400px", overflowY:"auto", fontSize:14 }} dangerouslySetInnerHTML={{ __html: latexToHtml(masterCorrection) }} />
                   </div>
-                  <Field label="Directives particulières de correction & Barème imposé :">
+                  <Field label="Vos consignes d'adaptation & Barème (L'IA obéira à ces règles pour la correction) :">
                     <textarea value={userDirectives} onChange={e=>setUserDirectives(e.target.value)} 
-                      placeholder="Ex: Exercice 1 sur 6 points. Valoriser les démarches de recherche même incomplètes..." 
+                      placeholder="Ex: L'exercice 1 est sur 5 points. Ne pénalise pas si l'élève oublie la constante d'intégration à la question 2. Sois indulgent sur les erreurs de calcul..." 
                       style={{ minHeight:100, border:"2px solid #bfdbfe", background:"#eff6ff" }}/>
                   </Field>
                 </div>
@@ -800,24 +811,24 @@ Remplis le format JSON suivant de manière détaillée :
 
           {step===3&&(
             <Card>
-              <SectionHead title="Évaluation Globale"/>
+              <SectionHead title="Évaluation Intelligente"/>
               {corrections.length===0 ? (
                 <div style={{ textAlign:"center", padding:"2rem 0" }}>
                   <p style={{ fontSize:15, color:"#374151", marginBottom:24 }}>
-                    L'IA va isoler virtuellement chaque élève et rédiger son rapport d'évaluation personnalisé au format mathématique standard.
+                    L'IA va maintenant extraire chaque copie du grand PDF et l'évaluer en appliquant strictement votre corrigé de référence.
                   </p>
                   <button disabled={busy||!apiKey||students.length===0} onClick={executeCorrection} style={{ background:"#16a34a", padding:"16px 32px", fontSize:16, fontWeight:600 }}>
-                    🚀 Lancer la correction de la classe ({students.length} copies)
+                    🚀 Lancer l'évaluation de la classe ({students.length} élèves)
                   </button>
                 </div>
               ) : (
                 <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
                   <div style={{ background:"#dcfce7", color:"#166534", padding:"12px", borderRadius:8, fontSize:14, fontWeight:500 }}>
-                    📊 Évaluation achevée. Vous avez la main sur l'ensemble des résultats ci-dessous.
+                    ✅ Corrections terminées. Vous pouvez ajuster les notes et mots de passe ci-dessous.
                   </div>
                   {students.map(s=>{
                     const c=corrections.find(x=>x.id===s.id);
-                    if (!c||c.skipped) return <div key={s.id} style={{ padding:12, background:"#f3f4f6", color:"#6b7280", borderRadius:8, fontSize:13 }}>Copie ignorée : {s.name}</div>;
+                    if (!c||c.skipped) return <div key={s.id} style={{ padding:12, background:"#f3f4f6", color:"#6b7280", borderRadius:8, fontSize:13 }}>Copie de {s.name} ignorée/introuvable.</div>;
                     return (
                       <div key={s.id} style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:16 }}>
                         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
@@ -827,7 +838,7 @@ Remplis le format JSON suivant de manière détaillée :
                             <span style={{ color:"#6b7280", fontWeight:600 }}>/20</span>
                           </div>
                         </div>
-                        <Field label="Commentaire global">
+                        <Field label="Appréciation">
                           <textarea value={c.appreciation||""} onChange={e=>updateCorrection(s.id,'appreciation',e.target.value)} style={{ minHeight:60 }}/>
                         </Field>
                         <div style={{ display:"grid", gap:8, background:"#f9fafb", padding:12, borderRadius:8, marginBottom:12 }}>
@@ -838,13 +849,13 @@ Remplis le format JSON suivant de manière détaillée :
                             </div>
                           ))}
                         </div>
-                        <Field label="Axe de progression">
+                        <Field label="Conseil">
                           <textarea value={c.conseil||""} onChange={e=>updateCorrection(s.id,'conseil',e.target.value)} style={{ minHeight:40 }}/>
                         </Field>
                       </div>
                     );
                   })}
-                  <button onClick={()=>setCorrections([])} style={{ background:"#f1f5f9", color:"#475569" }}>↻ Réinitialiser toutes les évaluations</button>
+                  <button onClick={()=>setCorrections([])} style={{ background:"#f1f5f9", color:"#475569" }}>↻ Réinitialiser les corrections</button>
                 </div>
               )}
             </Card>
@@ -852,7 +863,7 @@ Remplis le format JSON suivant de manière détaillée :
 
           {step===4&&(
             <Card>
-              <SectionHead title="Transmission des Bulletins"/>
+              <SectionHead title="Diffusion des Résultats"/>
               <div style={{ display:"flex", gap:12, marginBottom:20 }}>
                 <button onClick={()=>{
                   const rows = [...validCorrs]
@@ -866,11 +877,11 @@ Remplis le format JSON suivant de manière détaillée :
                     .map(c => `"${c.name}","${c.note}","${(c.appreciation||"").replace(/"/g,"'")}","${(c.conseil||"").replace(/"/g,"'")}"`);
                   const a = document.createElement("a"); a.href = "data:text/csv;charset=utf-8," + encodeURIComponent("\uFEFF\"Nom\",\"Note\",\"Appreciation\",\"Conseil\"\n" + rows.join("\n"));
                   a.download = `Notes_${sessionName.replace(/\W/g,"_")}.csv`; a.click();
-                }} style={{ flex:1, background:"#f8fafc", color:"#0f172a", border:"1px solid #cbd5e1" }}>📊 Exporter vers Excel (CSV)</button>
+                }} style={{ flex:1, background:"#f8fafc", color:"#0f172a", border:"1px solid #cbd5e1" }}>📊 Exporter Tableur (CSV)</button>
               </div>
 
               <div style={{ background:"#f8fafc", padding:20, borderRadius:12, textAlign:"center", border:"1px solid #e2e8f0" }}>
-                <div style={{ fontSize:14, color:"#64748b", marginBottom:8 }}>Moyenne arithmétique de l'épreuve</div>
+                <div style={{ fontSize:14, color:"#64748b", marginBottom:8 }}>Moyenne de la classe</div>
                 <div style={{ fontSize:36, fontWeight:700, color:"#0f172a" }}>{validCorrs.length>0?avg.toFixed(1):"—"}<span style={{ fontSize:20, color:"#94a3b8" }}>/20</span></div>
               </div>
 
@@ -878,11 +889,11 @@ Remplis le format JSON suivant de manière détaillée :
                 {mailsDone ? (
                   <div style={{ textAlign:"center", padding:24, background:"#f0fdf4", border:"1px solid #86efac", borderRadius:12, color:"#166534" }}>
                     <div style={{ fontSize:40, marginBottom:12 }}>🚀</div>
-                    <div style={{ fontSize:18, fontWeight:600 }}>Rapports PDF générés et expédiés avec succès !</div>
+                    <div style={{ fontSize:18, fontWeight:600 }}>Tous les PDF personnalisés ont été envoyés !</div>
                   </div>
                 ) : (
                   <button disabled={busy} onClick={sendResults} style={{ width:"100%", padding:"16px", background:"#2563eb", fontSize:16, fontWeight:600 }}>
-                    {busy ? "Génération et envoi des pièces jointes..." : "📧 Expédier les bilans PDF par e-mail"}
+                    {busy ? "Génération des PDF et envois..." : "📧 Créer les PDF HD et Envoyer par Gmail"}
                   </button>
                 )}
               </div>
@@ -890,8 +901,8 @@ Remplis le format JSON suivant de manière détaillée :
           )}
 
           <div style={{ display:"flex", justifyContent:"space-between", marginTop:"2rem" }}>
-            <button style={{ background:"transparent", color:"#475569", border:"1px solid #cbd5e1", visibility:step>0?"visible":"hidden" }} disabled={busy} onClick={()=>setStep(step-1)}>← Précédent</button>
-            {step<4&&<button disabled={!canNext||busy||!apiKey} onClick={()=>setStep(step+1)} style={{ background:"#0f172a", padding:"8px 24px" }}>Étape suivante →</button>}
+            <button style={{ background:"transparent", color:"#475569", border:"1px solid #cbd5e1", visibility:step>0?"visible":"hidden" }} disabled={busy} onClick={()=>setStep(step-1)}>← Étape Précédente</button>
+            {step<4&&<button disabled={!canNext||busy||!apiKey} onClick={()=>setStep(step+1)} style={{ background:"#0f172a", padding:"8px 24px" }}>Continuer →</button>}
           </div>
         </div>
       );
