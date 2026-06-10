@@ -163,7 +163,8 @@ async function callGemini(key, messages, system) {
     };
   }
 
-  var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" + key, {
+  // CORRECTION ICI : Utilisation de gemini-1.5-pro-latest
+  var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=" + key, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -179,11 +180,7 @@ async function callGemini(key, messages, system) {
 }
 
 /* ══ LaTeX → HTML (KaTeX) ═════════════════════════════════════════ */
-/* ══ Réparation JSON LaTeX ════════════════════════════════════════
-   Claude/Gemini écrit parfois du LaTeX brut dans les valeurs JSON :
-     "remarque":"soit $\frac{a}{b}$"  ← \f, \s, \a… invalides en JSON
-   Cette fonction double tous les backslashes sauf \" \\ \n \uXXXX.
-   \n est préservé pour les sauts de ligne intentionnels.           */
+/* ══ Réparation JSON LaTeX ════════════════════════════════════════ */
 function fixJsonBackslashes(raw) {
   var out = [], inStr = false, i = 0;
   while (i < raw.length) {
@@ -195,13 +192,13 @@ function fixJsonBackslashes(raw) {
     } else if (c === '\\') {
       var n = raw[i + 1] || '';
       if (n === '"' || n === '\\') {
-        out.push(c, n); i += 2;                                  // \" et \\ — garder
+        out.push(c, n); i += 2;                                  
       } else if (n === 'n') {
-        out.push(c, n); i += 2;                                  // \n newline — garder
+        out.push(c, n); i += 2;                                  
       } else if (n === 'u' && /[0-9a-fA-F]{4}/.test(raw.slice(i+2, i+6))) {
-        out.push(c, n, raw[i+2], raw[i+3], raw[i+4], raw[i+5]); i += 6; // \uXXXX — garder
+        out.push(c, n, raw[i+2], raw[i+3], raw[i+4], raw[i+5]); i += 6; 
       } else {
-        out.push('\\', '\\'); i++;  // tout le reste (\frac \sum \theta …) — doubler
+        out.push('\\', '\\'); i++;  
       }
     } else {
       if (c === '"') inStr = false;
@@ -236,11 +233,10 @@ function latexToHtml(src) {
         : '<span style=\"color:#555\">'+clean+'</span>';
     }
   }
-  // Regex définies en variables — évite toute confusion d'échappement
-  var RE1 = /\\\[([\s\S]+?)\\\]/g;   // \[...\] display
-  var RE2 = /\\\(([\s\S]+?)\\\)/g;   // \(...\) inline
-  var RE3 = /\$\$([\s\S]+?)\$\$/g;   // $$...$$ display
-  var RE4 = /\$([^$\r\n]+?)\$/g;     // $...$ inline
+  var RE1 = /\\\[([\s\S]+?)\\\]/g;   
+  var RE2 = /\\\(([\s\S]+?)\\\)/g;   
+  var RE3 = /\$\$([\s\S]+?)\$\$/g;   
+  var RE4 = /\$([^$\r\n]+?)\$/g;     
 
   var h = src
     .replace(RE1, function(_, m) { return "<div style=\"margin:10px 0;text-align:center\">" + rk(m, true) + "</div>"; })
@@ -268,12 +264,11 @@ function latexToHtml(src) {
     .replace(/\\hline/g, "")
     .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, "$1")
     .replace(/\\[a-zA-Z]+/g, "")
-    .replace(/\n{2,}/g, "<br/><br/>")  // double saut = séparation visuelle
-    .replace(/\n/g, "<br/>");           // saut simple = retour à la ligne
+    .replace(/\n{2,}/g, "<br/><br/>")  
+    .replace(/\n/g, "<br/>");           
   return "<div style=\"margin:0\">" + h + "</div>";
 }
 
-/* ══ Prompt de correction adaptatif (manuscrit + tapé, pleine qualité) ══ */
 const DEFAULT_CORR_SYS = "Professeur de maths lycée. Formules display : $$formule$$. Inline : $formule$. Tableaux : $$\\begin{array}{...}...\\end{array}$$. Structure : \\section*{titre} \\begin{enumerate} \\item. Retourne UNIQUEMENT le LaTeX du corrigé (sans \\documentclass).";
 
 const DEFAULT_PROMPT = `Correcteur maths lycée, pédagogue et bienveillant.
@@ -403,13 +398,12 @@ function Devoir({ sid, sname, onBack }) {
   function ld(k, fb) { var s = getSession(sid); return s[k] !== undefined ? s[k] : fb; }
   function ps(k, v)  { var all = getSessions(); var s = all[sid] || {}; s[k] = v; saveSession(sid, s); }
 
-  // Clé API (partagée entre sessions)
+  // Clé API mise à jour
   var [apiKey, setApiKeyR] = useState(function() { 
     try { 
       var stored = localStorage.getItem("pf_apikey");
-      // Valeur par défaut fournie par l'utilisateur (Attention à ne pas publier ce fichier !)
-      return stored || "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y"; 
-    } catch(e) { return "AIzaSyDxIzc5-HY279Lz99mElq4pBm0q5o3OB3Y"; } 
+      return stored || "AIzaSyCNregE3OjYMtVzNqTLODchhwsgLPtXDq0"; 
+    } catch(e) { return "AIzaSyCNregE3OjYMtVzNqTLODchhwsgLPtXDq0"; } 
   });
   function setApiKey(v) { setApiKeyR(v); try { localStorage.setItem("pf_apikey", v); } catch(e) {} }
 
@@ -420,8 +414,6 @@ function Devoir({ sid, sname, onBack }) {
   var [status, setStatus]  = useState("");
   var previewRef = useRef(null);
 
-  // Étape 0 – Sujet
-  // Mode toujours "upload" (génération supprimée)
   var subjectMode = "upload";
   var [consignes,   setConsignesR]   = useState(function() { return ld("consignes",""); });
   function setConsignes(v) { setConsignesR(v); ps("consignes",v); }
@@ -431,16 +423,14 @@ function Devoir({ sid, sname, onBack }) {
   function setCorrRef(v) { setCorrRefR(v); ps("corrRef",v); }
   var [upSubName,   setUpSubNameR]   = useState(function() { return ld("upSubName",""); });
   function setUpSubName(v) { setUpSubNameR(v); ps("upSubName",v); }
-  var [upSubPdf,    setUpSubPdf]     = useState(null); // binaire non persisté
+  var [upSubPdf,    setUpSubPdf]     = useState(null); 
 
-  // Étape 1 – Diffusion
   var [students,    setStudentsR]    = useState(function() { return ld("students",""); });
   function setStudents(v) { setStudentsR(v); ps("students",v); }
   var [extracting,  setExtracting]   = useState(false);
-  var [copies,      setCopies]       = useState([]);   // [{name,b64}] non persisté
+  var [copies,      setCopies]       = useState([]);   
   var namesExtracted = useRef(false);
 
-  // Étape 2 – Correction
   var [corrPrompt,  setCorrPromptR]  = useState(function() { return ld("corrPrompt", DEFAULT_PROMPT); });
   function setCorrPrompt(v) { setCorrPromptR(v); ps("corrPrompt",v); }
   var [showPrompt,  setShowPrompt]   = useState(false);
@@ -451,18 +441,16 @@ function Devoir({ sid, sname, onBack }) {
   var [corrections, setCorrectionsR] = useState(function() { return ld("corrections",[]); });
   function setCorrections(v) { setCorrectionsR(v); ps("corrections",v); }
 
-  // Étape 3 – Résultats
   var [mailsDone,   setMailsDoneR]   = useState(function() { return ld("mailsDone",false); });
   function setMailsDone(v) { setMailsDoneR(v); ps("mailsDone",v); }
   var [resending,   setResending]    = useState(null);
   var [corrRefLoading, setCorrRefLoading] = useState(false);
-  var [progress,    setProgress]     = useState(null); // {current, total, label}
-  // Invalider le cache image si on recommence une correction
+  var [progress,    setProgress]     = useState(null); 
+
   function resetCorrections() {
     setCorrections([]);
   }
 
-  // Dérivés
   var parsedStudents = students.trim().split("\n").filter(Boolean).map(function(line, i) {
     var parts = line.split(",").map(function(s){ return s.trim(); });
     return { id: i, name: parts[0] || ("Élève " + (i+1)), email: parts[1] || "" };
@@ -478,8 +466,6 @@ function Devoir({ sid, sname, onBack }) {
     true
   ][step];
 
-
-  /* ── Lire un fichier → base64 ── */
   function readFile(file) {
     return new Promise(function(res) {
       var r = new FileReader();
@@ -488,7 +474,6 @@ function Devoir({ sid, sname, onBack }) {
     });
   }
 
-  /* ── Extraire les noms depuis PDF ── */
   async function extractNames(b64) {
     if (!b64 || !apiKey) return;
     setExtracting(true);
@@ -506,20 +491,18 @@ function Devoir({ sid, sname, onBack }) {
     setExtracting(false);
   }
 
-  /* ── Ajouter copies PDF ── */
   async function addCopies(files) {
     var arr = Array.from(files).filter(function(f) { return f.type === "application/pdf"; });
     for (var i = 0; i < arr.length; i++) {
-      var file = arr[i];                    // Capturer la référence avant l'await
+      var file = arr[i];                    
       var b64  = await readFile(file);
-      var fname = file.name;               // Capturer le nom avant la closure
+      var fname = file.name;               
       setCopies(function(prev) { return prev.concat([{ name: fname, b64: b64 }]); });
       if (!namesExtracted.current) { namesExtracted.current = true; extractNames(b64); }
     }
     if (!corrRef && !corrRefLoading) buildCorrRef();
   }
 
-  /* ── Générer sujet LaTeX ── */
   async function generateSubject() {
     if (!consignes.trim() || !apiKey) return;
     setBusy(true); setStatus("Génération du sujet…");
@@ -540,7 +523,6 @@ function Devoir({ sid, sname, onBack }) {
     finally { setBusy(false); }
   }
 
-  /* ── Charger html2canvas à la demande ── */
   function loadH2C() {
     return new Promise(function(res, rej) {
       if (window.html2canvas) { res(); return; }
@@ -551,7 +533,6 @@ function Devoir({ sid, sname, onBack }) {
     });
   }
 
-  /* ── Télécharger sujet en PDF ── */
   async function downloadSubjectPdf() {
     if (!previewRef.current || !window.jspdf) return;
     setBusy(true); setStatus("Génération du PDF…");
@@ -578,7 +559,6 @@ function Devoir({ sid, sname, onBack }) {
     finally { setBusy(false); }
   }
 
-  /* ── pdf-lib chargé dynamiquement ── */
   function loadPdfLib() {
     return new Promise(function(res,rej){
       if(window.PDFLib){res(window.PDFLib);return;}
@@ -589,7 +569,6 @@ function Devoir({ sid, sname, onBack }) {
     });
   }
 
-  /* ── Phase 1 : repérage pages (1 requête légère) ── */
   async function detectPageRanges(pdfB64, names) {
     var raw = await callGemini(apiKey,[{role:"user",content:[
       {type:"document",source:{type:"base64",media_type:"application/pdf",data:pdfB64}},
@@ -600,7 +579,6 @@ function Devoir({ sid, sname, onBack }) {
     return safeJsonParse(raw);
   }
 
-  /* ── Phase 2 : découpage local (aucune requête) ── */
   async function extractStudentPdf(PDFLib,fullB64,pageStart,pageEnd){
     var src=new Uint8Array(atob(fullB64).split("").map(function(c){return c.charCodeAt(0);}));
     var srcDoc=await PDFLib.PDFDocument.load(src);
@@ -615,10 +593,8 @@ function Devoir({ sid, sname, onBack }) {
     return btoa(bin);
   }
 
-  /* ── Phase 3 : correction individuelle (PDF 2 pages) ── */
   async function correctOnePdf(studentB64,name,corrRefText){
     var blocks=[];
-    // Si on a le corrigé en texte, on l'envoie à la place du PDF sujet (économie tokens majeure)
     if(corrRefText){
       blocks.push({type:"text",text:"CORRIGÉ DE RÉFÉRENCE (barème) :\n"+corrRefText});
     } else if(upSubPdf){
@@ -631,7 +607,6 @@ function Devoir({ sid, sname, onBack }) {
     return Array.isArray(p)?p[0]:p;
   }
 
-  /* ── Fallback : correction par lots ── */
   async function correctByLots(copyList,corrRefText){
     var results=[],LOT_SIZE=10,totalLots=Math.ceil(copyList.length/LOT_SIZE);
     for(var lot=0;lot<totalLots;lot++){
@@ -657,12 +632,10 @@ function Devoir({ sid, sname, onBack }) {
     return results;
   }
 
-  /* ── Correction depuis PDF ── */
   async function correctFromPdf() {
     if(!copies.length||!apiKey)return;
     setBusy(true);
     try {
-      // Étape 0 : générer le corrigé de référence EN PREMIER (évite d'envoyer le PDF sujet à chaque copie)
       var activeCorrRef = corrRef;
       if(!activeCorrRef && upSubPdf){
         setStatus("Génération du corrigé de référence (1 seul appel)…");
@@ -710,7 +683,6 @@ function Devoir({ sid, sname, onBack }) {
     finally{setBusy(false);setProgress(null);}
   }
 
-  /* ── Correction manuelle ── */
   async function correctAll() {
     if (!apiKey) return;
     setBusy(true);
@@ -736,18 +708,15 @@ function Devoir({ sid, sname, onBack }) {
       }
       setCorrections(results);
     } finally { setBusy(false); }
-    // Générer le corrigé LaTeX si absent
     await buildCorrRef();
   }
 
-  /* ── Copie en retard ── */
   async function addLate(file) {
     if (!file || !apiKey) return;
     setBusy(true); setStatus("Correction en cours…");
     try {
       var b64 = await readFile(file);
       var blocks = [];
-      // Utilise le corrigé texte si disponible (économie tokens), sinon le PDF sujet
       if (corrRef) {
         blocks.push({ type:"text", text:"CORRIGÉ DE RÉFÉRENCE :\n" + corrRef });
       } else if (upSubPdf) {
@@ -770,7 +739,6 @@ function Devoir({ sid, sname, onBack }) {
     finally { setBusy(false); }
   }
 
-  /* ── Générer le corrigé LaTeX depuis le sujet PDF (1 seul appel) ── */
   async function buildCorrRef() {
     if (corrRef || corrRefLoading) return;
     if (!apiKey || !upSubPdf) return;
@@ -790,7 +758,6 @@ function Devoir({ sid, sname, onBack }) {
   }
 
 
-  /* ── Appliquer les consignes de modification du corrigé ── */
   async function applyEditInstr() {
     var instr = (corrEditInstr || "").trim();
     if (!instr || !corrRef || !apiKey) return;
@@ -837,12 +804,10 @@ function Devoir({ sid, sname, onBack }) {
       + "<p style=\"margin-top:20px;color:#555;font-size:11pt\">Cordialement,<br/>F. Nocca</p></div>";
   }
 
-  /* ── Envoyer à un élève ── */
   async function sendOne(cor) {
     await sendGmailHtml(cor.email, "Résultats – " + sname, buildMailHtml(cor, corrRef));
   }
 
-  /* ── Renvoi individuel ── */
   async function resendOne(cor) {
     if (!cor.email || busy) return;
     setResending(cor.id);
@@ -853,7 +818,6 @@ function Devoir({ sid, sname, onBack }) {
     finally { setResending(null); }
   }
 
-  /* ── Envoyer tous les résultats ── */
   async function sendResults() {
     var toSend = corrections.filter(function(c) { return !c.skipped && c.email; });
     if (!toSend.length) return;
@@ -878,7 +842,6 @@ function Devoir({ sid, sname, onBack }) {
     }
   }
 
-  /* ── Export CSV ── */
   function exportCsv() {
     var details0 = validCorrs.length > 0 ? (validCorrs[0].details || []) : [];
     var detH = details0.map(function(d) { return "\"" + d.exercice + " (pts)\",\"" + d.exercice + " (remarque)\""; }).join(",");
@@ -900,7 +863,6 @@ function Devoir({ sid, sname, onBack }) {
     a.click();
   }
 
-  /* ── Export PDF récap ── */
   function exportRecap() {
     if (!window.jspdf) return;
     var jsPDF = window.jspdf.jsPDF;
