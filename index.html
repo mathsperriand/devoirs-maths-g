@@ -164,7 +164,7 @@ async function callGemini(key, messages, system) {
   }
 
   // CORRECTION ICI : Utilisation de gemini-1.5-pro-latest
-  var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=" + key, {
+  var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + key, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
