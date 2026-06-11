@@ -1,4 +1,4 @@
-f<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8"/>
@@ -112,8 +112,11 @@ async function sendGmailHtml(to, subj, htmlBody) {
 async function sendGmailWithAttachment(to, subj, bodyHtml, pdfBase64, pdfFilename) {
   var token = await getGmailToken();
   var bnd = "bndry_" + Math.random().toString(36).slice(2, 10);
+  // HTML body encodé en base64 (gère les caractères UTF-8)
   var bodyB64 = btoa(unescape(encodeURIComponent(bodyHtml)));
+  // PDF base64 découpé en lignes de 76 chars (RFC 2045)
   var pdfLines = (pdfBase64.match(/.{1,76}/g) || []).join("\r\n");
+  // Construire le MIME multipart (tout en ASCII après encodage)
   var mime = [
     "From: " + GMAIL_SENDER,
     "To: " + to,
@@ -134,6 +137,7 @@ async function sendGmailWithAttachment(to, subj, bodyHtml, pdfBase64, pdfFilenam
     pdfLines,
     "--" + bnd + "--"
   ].join("\r\n");
+  // base64url du message MIME complet (entièrement ASCII à ce stade)
   var raw = btoa(mime).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   var res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
     method: "POST",
@@ -146,7 +150,7 @@ async function sendGmailWithAttachment(to, subj, bodyHtml, pdfBase64, pdfFilenam
   }
 }
 
-/* ══ jsPDF → base64 ══════════════════════════════════════════════ */
+/* ══ jsPDF → base64 (chunked, sans stack overflow) ════════════════ */
 function pdfToBase64(pdf) {
   var ab = pdf.output("arraybuffer");
   var bytes = new Uint8Array(ab);
@@ -166,9 +170,8 @@ function getActive()     { return localStorage.getItem(ACTIVE_KEY) || null; }
 function setActive(id)   { localStorage.setItem(ACTIVE_KEY, id); }
 function newId()         { return "s_" + Date.now(); }
 
-/* ══ API Gemini (Anciennement Claude) ═════════════════════════════ */
-async function callGemini(key, messages, system) {
-  // Traduction du format des messages (Claude) vers gemini-2.5-flash
+/* ══ API Gemini ═══════════════════════════════════════════════════ */
+async function callGemini(key, model, messages, system) {
   var contents = messages.map(function(msg) {
     var parts = [];
     if (typeof msg.content === "string") {
@@ -199,7 +202,7 @@ async function callGemini(key, messages, system) {
     body.systemInstruction = { parts: [{ text: system }] };
   }
 
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key;
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key;
 
   var res = await fetch(url, {
     method: "POST",
@@ -216,7 +219,8 @@ async function callGemini(key, messages, system) {
   return "";
 }
 
-/* ══ LaTeX → HTML (KaTeX) & JSON Repair ═══════════════════════════ */
+/* ══ LaTeX → HTML (KaTeX) ═════════════════════════════════════════ */
+/* ══ Réparation JSON LaTeX ════════════════════════════════════════ */
 function fixJsonBackslashes(raw) {
   var out = [], inStr = false, i = 0;
   while (i < raw.length) {
@@ -228,13 +232,13 @@ function fixJsonBackslashes(raw) {
     } else if (c === '\\') {
       var n = raw[i + 1] || '';
       if (n === '"' || n === '\\') {
-        out.push(c, n); i += 2;
+        out.push(c, n); i += 2;                                  // \" et \\ — garder
       } else if (n === 'n') {
-        out.push(c, n); i += 2;
+        out.push(c, n); i += 2;                                  // \n newline — garder
       } else if (n === 'u' && /[0-9a-fA-F]{4}/.test(raw.slice(i+2, i+6))) {
-        out.push(c, n, raw[i+2], raw[i+3], raw[i+4], raw[i+5]); i += 6;
+        out.push(c, n, raw[i+2], raw[i+3], raw[i+4], raw[i+5]); i += 6; // \uXXXX — garder
       } else {
-        out.push('\\', '\\'); i++;
+        out.push('\\', '\\'); i++;  // tout le reste (\frac \sum \theta …) — doubler
       }
     } else {
       if (c === '"') inStr = false;
@@ -243,7 +247,6 @@ function fixJsonBackslashes(raw) {
   }
   return out.join('');
 }
-
 function safeJsonParse(raw) {
   var s = raw.replace(/```json|```/g, '').trim();
   try { return JSON.parse(s); } catch(e) {
@@ -255,24 +258,30 @@ function safeJsonParse(raw) {
 
 function latexToHtml(src) {
   if (!window.katex || !src) return "<pre style=\"white-space:pre-wrap\">" + (src || "") + "</pre>";
+
   src = src.replace(/\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}/g,
     "<div style=\"border:1px dashed #d1d5db;padding:8px 12px;border-radius:6px;color:#9ca3af;font-size:10.5pt;font-style:italic;margin:8px 0\">📊 Graphique — voir le sujet PDF</div>");
   src = src.replace(/\\begin\{axis\}[\s\S]*?\\end\{axis\}/g, "");
   src = src.replace(/\\begin\{pgfpicture\}[\s\S]*?\\end\{pgfpicture\}/g, "");
   function rk(m, disp) {
     try {
-      return window.katex.renderToString(m.trim(), { displayMode: disp, throwOnError: true, output: "html" });
+      return window.katex.renderToString(m.trim(), {
+        displayMode: disp, throwOnError: true, output: "html"
+      });
     } catch(e) {
-      var clean = m.replace(/\\[a-zA-Z]+\{[^}]*\}/g," ").replace(/\\[a-zA-Z]+/g," ").replace(/[{}$&\\]/g," ").replace(/\s+/g," ").trim();
+      var clean = m.replace(/\\[a-zA-Z]+\{[^}]*\}/g," ")
+                   .replace(/\\[a-zA-Z]+/g," ")
+                   .replace(/[{}$&\\]/g," ")
+                   .replace(/\s+/g," ").trim();
       return disp
         ? '<div style=\"margin:8px 0;text-align:center;color:#555;font-style:italic\">'+clean+'</div>'
         : '<span style=\"color:#555\">'+clean+'</span>';
     }
   }
-  var RE1 = /\\\[([\s\S]+?)\\\]/g;
-  var RE2 = /\\\(([\s\S]+?)\\\)/g;
-  var RE3 = /\$\$([\s\S]+?)\$\$/g;
-  var RE4 = /\$([^$\r\n]+?)\$/g;
+  var RE1 = /\\\[([\s\S]+?)\\\]/g;   
+  var RE2 = /\\\(([\s\S]+?)\\\)/g;   
+  var RE3 = /\$\$([\s\S]+?)\$\$/g;   
+  var RE4 = /\$([^$\r\n]+?)\$/g;     
 
   var h = src
     .replace(RE1, function(_, m) { return "<div style=\"margin:10px 0;text-align:center\">" + rk(m, true) + "</div>"; })
@@ -300,12 +309,12 @@ function latexToHtml(src) {
     .replace(/\\hline/g, "")
     .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, "$1")
     .replace(/\\[a-zA-Z]+/g, "")
-    .replace(/\n{2,}/g, "<br/><br/>")
-    .replace(/\n/g, "<br/>");
+    .replace(/\n{2,}/g, "<br/><br/>")  
+    .replace(/\n/g, "<br/>");           
   return "<div style=\"margin:0\">" + h + "</div>";
 }
 
-/* ══ Prompt de correction adaptatif ═══════════════════════════════ */
+/* ══ Prompt de correction adaptatif ══ */
 const DEFAULT_CORR_SYS = "Professeur de maths lycée. Formules display : $$formule$$. Inline : $formule$. Tableaux : $$\\begin{array}{...}...\\end{array}$$. Structure : \\section*{titre} \\begin{enumerate} \\item. N'utilise JAMAIS \\begin{tikzpicture} ni pgfplots ni environnement graphique — décris le graphique par ses points clés et l'allure de la courbe. Retourne UNIQUEMENT le LaTeX du corrigé (sans \\documentclass).";
 
 const DEFAULT_PROMPT = `Correcteur maths lycée, pédagogue et bienveillant.
@@ -439,6 +448,9 @@ function Devoir({ sid, sname, onBack }) {
   var [apiKey, setApiKeyR] = useState(function() { try { return localStorage.getItem("pf_apikey") || ""; } catch(e) { return ""; } });
   function setApiKey(v) { setApiKeyR(v); try { localStorage.setItem("pf_apikey", v); } catch(e) {} }
 
+  var [apiModel, setApiModelR] = useState(function() { try { return localStorage.getItem("pf_apimodel") || "gemini-2.5-flash"; } catch(e) { return "gemini-2.5-flash"; } });
+  function setApiModel(v) { setApiModelR(v); try { localStorage.setItem("pf_apimodel", v); } catch(e) {} }
+
   var [step,   setStepR]   = useState(function() { return ld("step", 0); });
   function setStep(v) { setStepR(v); ps("step", v); }
 
@@ -479,7 +491,7 @@ function Devoir({ sid, sname, onBack }) {
   function setMailsDone(v) { setMailsDoneR(v); ps("mailsDone",v); }
   var [resending,   setResending]    = useState(null);
   var [corrRefLoading, setCorrRefLoading] = useState(false);
-  var [progress,    setProgress]     = useState(null);
+  var [progress,    setProgress]     = useState(null); 
 
   function resetCorrections() {
     setCorrections([]);
@@ -495,7 +507,13 @@ function Devoir({ sid, sname, onBack }) {
   var avg = validCorrs.filter(function(c) { return !isNaN(+c.note); })
     .reduce(function(a, c, _, arr) { return a + (+c.note) / arr.length; }, 0);
 
-  var canNext = [ !!upSubPdf, true, corrections.length > 0, true ][step];
+  var canNext = [
+    !!upSubPdf,
+    true,
+    corrections.length > 0,
+    true
+  ][step];
+
 
   function readFile(file) {
     return new Promise(function(res) {
@@ -509,7 +527,7 @@ function Devoir({ sid, sname, onBack }) {
     if (!b64 || !apiKey) return;
     setExtracting(true);
     try {
-      var raw = await callGemini(apiKey, [{
+      var raw = await callGemini(apiKey, apiModel, [{
         role: "user",
         content: [
           { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
@@ -538,7 +556,7 @@ function Devoir({ sid, sname, onBack }) {
     if (!consignes.trim() || !apiKey) return;
     setBusy(true); setStatus("Génération du sujet…");
     try {
-      var res = await callGemini(apiKey, [{
+      var res = await callGemini(apiKey, apiModel, [{
         role: "user",
         content: "Génère un sujet de mathématiques en LaTeX selon ces consignes :\n" + consignes +
           "\n\nRetourne UNIQUEMENT le contenu LaTeX (sans \\documentclass), puis ---CORRECTION--- :\n\n" +
@@ -601,7 +619,7 @@ function Devoir({ sid, sname, onBack }) {
   }
 
   async function detectPageRanges(pdfB64, names) {
-    var raw = await callGemini(apiKey,[{role:"user",content:[
+    var raw = await callGemini(apiKey, apiModel, [{role:"user",content:[
       {type:"document",source:{type:"base64",media_type:"application/pdf",data:pdfB64}},
       {type:"text",text:"Élèves :\n"+names.join("\n")+
         "\n\nDis-moi à quelle page commence et finit chaque copie."+
@@ -633,7 +651,7 @@ function Devoir({ sid, sname, onBack }) {
     }
     blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:studentB64}});
     blocks.push({type:"text",text:"Élève : "+name+". Corrige UNIQUEMENT cette copie. 1 objet JSON."});
-    var raw=await callGemini(apiKey,[{role:"user",content:blocks}],corrPrompt);
+    var raw=await callGemini(apiKey, apiModel, [{role:"user",content:blocks}],corrPrompt);
     var p=safeJsonParse(raw);
     return Array.isArray(p)?p[0]:p;
   }
@@ -656,7 +674,7 @@ function Devoir({ sid, sname, onBack }) {
           "Copies attendues :\n"+parsedStudents.map(function(s){return "- "+s.name;}).join("\n")+
           "\nIdentifie la copie et ses pages. JSON uniquement."
         });
-        var raw=await callGemini(apiKey,[{role:"user",content:blocks}],corrPrompt);
+        var raw=await callGemini(apiKey, apiModel, [{role:"user",content:blocks}],corrPrompt);
         results=results.concat(safeJsonParse(raw));
       }
     }
@@ -671,7 +689,7 @@ function Devoir({ sid, sname, onBack }) {
       if(!activeCorrRef && upSubPdf){
         setStatus("Génération du corrigé de référence (1 seul appel)…");
         try{
-          var sysR = await callGemini(apiKey,
+          var sysR = await callGemini(apiKey, apiModel,
             [{role:"user",content:[
               {type:"document",source:{type:"base64",media_type:"application/pdf",data:upSubPdf}},
               {type:"text",text:"Génère le corrigé complet et détaillé en LaTeX. Exercice par exercice, toutes les étapes, toutes les formules."}
@@ -735,7 +753,7 @@ function Devoir({ sid, sname, onBack }) {
         if (!ans) { results.push(Object.assign({}, s, { skipped:true })); continue; }
         setStatus("Correction de " + s.name + "…");
         try {
-          var raw = await callGemini(apiKey, [{
+          var raw = await callGemini(apiKey, apiModel, [{
             role: "user",
             content: "Corrige cette copie.\nSUJET:\n" + latex +
               "\nCORRIGÉ:\n" + (corrRef || "[utilise tes connaissances]") +
@@ -765,7 +783,7 @@ function Devoir({ sid, sname, onBack }) {
       }
       blocks.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:b64 } });
       blocks.push({ type:"text", text:"Copie en retard. JSON uniquement." });
-      var raw = await callGemini(apiKey, [{ role:"user", content:blocks }], corrPrompt);
+      var raw = await callGemini(apiKey, apiModel, [{ role:"user", content:blocks }], corrPrompt);
       var arr = safeJsonParse(raw);
       if (arr.length > 0) {
         var r = arr[0];
@@ -786,7 +804,7 @@ function Devoir({ sid, sname, onBack }) {
     setCorrRefLoading(true);
     setStatus("Génération du corrigé en LaTeX…");
     try {
-      var raw = await callGemini(apiKey,
+      var raw = await callGemini(apiKey, apiModel,
         [{ role:"user", content:[
           { type:"document", source:{ type:"base64", media_type:"application/pdf", data:upSubPdf } },
           { type:"text", text:"Génère le corrigé complet et détaillé en LaTeX. Exercice par exercice, toutes les étapes, toutes les formules." }
@@ -802,7 +820,7 @@ function Devoir({ sid, sname, onBack }) {
   async function buildCorrSummary(corrRefText) {
     if (!corrRefText || !apiKey) return "";
     try {
-      var raw = await callGemini(apiKey,
+      var raw = await callGemini(apiKey, apiModel,
         [{ role:"user", content:
           "Voici le corrigé LaTeX d'un devoir :\n\n" + corrRefText +
           "\n\nGénère un barème condensé en texte simple (pas de LaTeX, pas de markdown). " +
@@ -825,7 +843,7 @@ function Devoir({ sid, sname, onBack }) {
     setBusy(true); setCorrEditBusy(true);
     setStatus("Modification du corrigé…");
     try {
-      var raw = await callGemini(apiKey,
+      var raw = await callGemini(apiKey, apiModel,
         [{ role:"user", content:
           "Voici le corrigé actuel en LaTeX :\n\n" + corrRef +
           "\n\nModifie-le selon ces consignes : " + instr +
@@ -1056,9 +1074,24 @@ function Devoir({ sid, sname, onBack }) {
       </div>
 
       <Card>
-        <Field label="🔑 Clé API Google Gemini">
-          <input type="password" value={apiKey} onChange={function(e){setApiKey(e.target.value);}} placeholder="AIza..." style={{fontFamily:"monospace"}}/>
-        </Field>
+        <div style={{display:"flex", gap:16, flexWrap:"wrap"}}>
+          <div style={{flex:1, minWidth:250}}>
+            <Field label="🔑 Clé API Google Gemini">
+              <input type="password" value={apiKey} onChange={function(e){setApiKey(e.target.value);}} placeholder="AIza..." style={{fontFamily:"monospace"}}/>
+            </Field>
+          </div>
+          <div style={{flex:1, minWidth:250}}>
+            <Field label="🤖 Modèle (Sélectionnable)">
+              <select value={apiModel} onChange={function(e){setApiModel(e.target.value);}}>
+                <option value="gemini-3.5-flash">Gemini 3.5 Flash (Dernière génération)</option>
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommandé - Rapide & Éco)</option>
+                <option value="gemini-2.5-pro">Gemini 2.5 Pro (Raisonnement complexe, coûteux)</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+              </select>
+            </Field>
+          </div>
+        </div>
         {!apiKey && <p style={{fontSize:12,color:"#dc2626",marginTop:6}}>⚠️ Saisissez votre clé API pour activer l'outil.</p>}
         {apiKey  && <p style={{fontSize:12,color:"#16a34a",marginTop:6}}>✓ Clé partagée entre tous les devoirs.</p>}
       </Card>
@@ -1380,7 +1413,7 @@ function Devoir({ sid, sname, onBack }) {
             <div>
               <div style={{fontSize:11,color:"#6b7280",textAlign:"center",margin:"8px 0"}}>
                 ⏱ ~{Math.ceil(validCorrs.filter(function(c){return !!c.email;}).length*5/60)+1} min
-                &nbsp;·&nbsp; PDF + mail par élève &nbsp;·&nbsp; 0 appel Gemini
+                &nbsp;·&nbsp; PDF + mail par élève
               </div>
               {busy && progress && (
                 <div style={{marginBottom:12}}>
