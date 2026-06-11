@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+f<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8"/>
@@ -168,7 +168,7 @@ function newId()         { return "s_" + Date.now(); }
 
 /* ══ API Gemini (Anciennement Claude) ═════════════════════════════ */
 async function callGemini(key, messages, system) {
-  // Traduction du format des messages (Claude) vers Gemini 1.5 Pro
+  // Traduction du format des messages (Claude) vers gemini-2.5-flash
   var contents = messages.map(function(msg) {
     var parts = [];
     if (typeof msg.content === "string") {
@@ -199,7 +199,7 @@ async function callGemini(key, messages, system) {
     body.systemInstruction = { parts: [{ text: system }] };
   }
 
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" + key;
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key;
 
   var res = await fetch(url, {
     method: "POST",
