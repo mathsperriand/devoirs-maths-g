@@ -108,7 +108,45 @@ async function sendGmailHtml(to, subj, htmlBody) {
   }
 }
 
-/* ══ jsPDF → base64 (chunked, sans stack overflow) ════════════════ */
+/* ══ Gmail — envoi avec pièce jointe PDF ═══════════════════════════ */
+async function sendGmailWithAttachment(to, subj, bodyHtml, pdfBase64, pdfFilename) {
+  var token = await getGmailToken();
+  var bnd = "bndry_" + Math.random().toString(36).slice(2, 10);
+  var bodyB64 = btoa(unescape(encodeURIComponent(bodyHtml)));
+  var pdfLines = (pdfBase64.match(/.{1,76}/g) || []).join("\r\n");
+  var mime = [
+    "From: " + GMAIL_SENDER,
+    "To: " + to,
+    "Subject: =?UTF-8?B?" + btoa(unescape(encodeURIComponent(subj))) + "?=",
+    "MIME-Version: 1.0",
+    "Content-Type: multipart/mixed; boundary=\"" + bnd + "\"",
+    "",
+    "--" + bnd,
+    "Content-Type: text/html; charset=utf-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    bodyB64,
+    "--" + bnd,
+    "Content-Type: application/pdf; name=\"" + pdfFilename + "\"",
+    "Content-Transfer-Encoding: base64",
+    "Content-Disposition: attachment; filename=\"" + pdfFilename + "\"",
+    "",
+    pdfLines,
+    "--" + bnd + "--"
+  ].join("\r\n");
+  var raw = btoa(mime).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  var res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw: raw })
+  });
+  if (!res.ok) {
+    var err = await res.json();
+    throw new Error(err.error ? err.error.message : "Erreur Gmail");
+  }
+}
+
+/* ══ jsPDF → base64 ══════════════════════════════════════════════ */
 function pdfToBase64(pdf) {
   var ab = pdf.output("arraybuffer");
   var bytes = new Uint8Array(ab);
@@ -128,43 +166,42 @@ function getActive()     { return localStorage.getItem(ACTIVE_KEY) || null; }
 function setActive(id)   { localStorage.setItem(ACTIVE_KEY, id); }
 function newId()         { return "s_" + Date.now(); }
 
-/* ══ API Gemini (Remplacement de Claude) ═════════════════════════ */
+/* ══ API Gemini (Anciennement Claude) ═════════════════════════════ */
 async function callGemini(key, messages, system) {
-  // Traduction du format de messages (Claude) vers le format (Gemini)
-  var geminiContents = messages.map(function(msg) {
+  // Traduction du format des messages (Claude) vers Gemini 1.5 Pro
+  var contents = messages.map(function(msg) {
     var parts = [];
-    if (typeof msg.content === 'string') {
+    if (typeof msg.content === "string") {
       parts.push({ text: msg.content });
     } else if (Array.isArray(msg.content)) {
-      msg.content.forEach(function(c) {
-        if (c.type === 'text') {
-          parts.push({ text: c.text });
-        } else if (c.type === 'document' || c.type === 'image') {
+      msg.content.forEach(function(item) {
+        if (item.type === "text") {
+          parts.push({ text: item.text });
+        } else if (item.type === "document" && item.source && item.source.type === "base64") {
           parts.push({
             inlineData: {
-              mimeType: c.source.media_type,
-              data: c.source.data
+              mimeType: item.source.media_type || "application/pdf",
+              data: item.source.data
             }
           });
         }
       });
     }
-    return { role: msg.role === 'assistant' ? 'model' : 'user', parts: parts };
+    return { role: msg.role === "assistant" ? "model" : "user", parts: parts };
   });
 
   var body = {
-    contents: geminiContents,
+    contents: contents,
     generationConfig: { maxOutputTokens: 8192 }
   };
 
   if (system) {
-    body.systemInstruction = {
-      parts: [{ text: system }]
-    };
+    body.systemInstruction = { parts: [{ text: system }] };
   }
 
-  // CORRECTION ICI : Utilisation de gemini-1.5-pro-latest
-  var res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-extended:generateContent?key=" + key, {
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" + key;
+
+  var res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -173,14 +210,13 @@ async function callGemini(key, messages, system) {
   var data = await res.json();
   if (data.error) throw new Error(data.error.message);
 
-  if (data.candidates && data.candidates.length > 0 && data.candidates[0].content.parts.length > 0) {
-    return data.candidates[0].content.parts[0].text || "";
+  if (data.candidates && data.candidates.length > 0 && data.candidates[0].content && data.candidates[0].content.parts) {
+    return data.candidates[0].content.parts.map(function(p) { return p.text || ""; }).join("");
   }
   return "";
 }
 
-/* ══ LaTeX → HTML (KaTeX) ═════════════════════════════════════════ */
-/* ══ Réparation JSON LaTeX ════════════════════════════════════════ */
+/* ══ LaTeX → HTML (KaTeX) & JSON Repair ═══════════════════════════ */
 function fixJsonBackslashes(raw) {
   var out = [], inStr = false, i = 0;
   while (i < raw.length) {
@@ -192,13 +228,13 @@ function fixJsonBackslashes(raw) {
     } else if (c === '\\') {
       var n = raw[i + 1] || '';
       if (n === '"' || n === '\\') {
-        out.push(c, n); i += 2;                                  
+        out.push(c, n); i += 2;
       } else if (n === 'n') {
-        out.push(c, n); i += 2;                                  
+        out.push(c, n); i += 2;
       } else if (n === 'u' && /[0-9a-fA-F]{4}/.test(raw.slice(i+2, i+6))) {
-        out.push(c, n, raw[i+2], raw[i+3], raw[i+4], raw[i+5]); i += 6; 
+        out.push(c, n, raw[i+2], raw[i+3], raw[i+4], raw[i+5]); i += 6;
       } else {
-        out.push('\\', '\\'); i++;  
+        out.push('\\', '\\'); i++;
       }
     } else {
       if (c === '"') inStr = false;
@@ -207,6 +243,7 @@ function fixJsonBackslashes(raw) {
   }
   return out.join('');
 }
+
 function safeJsonParse(raw) {
   var s = raw.replace(/```json|```/g, '').trim();
   try { return JSON.parse(s); } catch(e) {
@@ -218,25 +255,24 @@ function safeJsonParse(raw) {
 
 function latexToHtml(src) {
   if (!window.katex || !src) return "<pre style=\"white-space:pre-wrap\">" + (src || "") + "</pre>";
+  src = src.replace(/\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}/g,
+    "<div style=\"border:1px dashed #d1d5db;padding:8px 12px;border-radius:6px;color:#9ca3af;font-size:10.5pt;font-style:italic;margin:8px 0\">📊 Graphique — voir le sujet PDF</div>");
+  src = src.replace(/\\begin\{axis\}[\s\S]*?\\end\{axis\}/g, "");
+  src = src.replace(/\\begin\{pgfpicture\}[\s\S]*?\\end\{pgfpicture\}/g, "");
   function rk(m, disp) {
     try {
-      return window.katex.renderToString(m.trim(), {
-        displayMode: disp, throwOnError: true, output: "html"
-      });
+      return window.katex.renderToString(m.trim(), { displayMode: disp, throwOnError: true, output: "html" });
     } catch(e) {
-      var clean = m.replace(/\\[a-zA-Z]+\{[^}]*\}/g," ")
-                   .replace(/\\[a-zA-Z]+/g," ")
-                   .replace(/[{}$&\\]/g," ")
-                   .replace(/\s+/g," ").trim();
+      var clean = m.replace(/\\[a-zA-Z]+\{[^}]*\}/g," ").replace(/\\[a-zA-Z]+/g," ").replace(/[{}$&\\]/g," ").replace(/\s+/g," ").trim();
       return disp
         ? '<div style=\"margin:8px 0;text-align:center;color:#555;font-style:italic\">'+clean+'</div>'
         : '<span style=\"color:#555\">'+clean+'</span>';
     }
   }
-  var RE1 = /\\\[([\s\S]+?)\\\]/g;   
-  var RE2 = /\\\(([\s\S]+?)\\\)/g;   
-  var RE3 = /\$\$([\s\S]+?)\$\$/g;   
-  var RE4 = /\$([^$\r\n]+?)\$/g;     
+  var RE1 = /\\\[([\s\S]+?)\\\]/g;
+  var RE2 = /\\\(([\s\S]+?)\\\)/g;
+  var RE3 = /\$\$([\s\S]+?)\$\$/g;
+  var RE4 = /\$([^$\r\n]+?)\$/g;
 
   var h = src
     .replace(RE1, function(_, m) { return "<div style=\"margin:10px 0;text-align:center\">" + rk(m, true) + "</div>"; })
@@ -264,20 +300,23 @@ function latexToHtml(src) {
     .replace(/\\hline/g, "")
     .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, "$1")
     .replace(/\\[a-zA-Z]+/g, "")
-    .replace(/\n{2,}/g, "<br/><br/>")  
-    .replace(/\n/g, "<br/>");           
+    .replace(/\n{2,}/g, "<br/><br/>")
+    .replace(/\n/g, "<br/>");
   return "<div style=\"margin:0\">" + h + "</div>";
 }
 
-const DEFAULT_CORR_SYS = "Professeur de maths lycée. Formules display : $$formule$$. Inline : $formule$. Tableaux : $$\\begin{array}{...}...\\end{array}$$. Structure : \\section*{titre} \\begin{enumerate} \\item. Retourne UNIQUEMENT le LaTeX du corrigé (sans \\documentclass).";
+/* ══ Prompt de correction adaptatif ═══════════════════════════════ */
+const DEFAULT_CORR_SYS = "Professeur de maths lycée. Formules display : $$formule$$. Inline : $formule$. Tableaux : $$\\begin{array}{...}...\\end{array}$$. Structure : \\section*{titre} \\begin{enumerate} \\item. N'utilise JAMAIS \\begin{tikzpicture} ni pgfplots ni environnement graphique — décris le graphique par ses points clés et l'allure de la courbe. Retourne UNIQUEMENT le LaTeX du corrigé (sans \\documentclass).";
 
 const DEFAULT_PROMPT = `Correcteur maths lycée, pédagogue et bienveillant.
 
-LECTURE : Si copie manuscrite/ambiguë → champ "transcription" décrivant l'interprétation ; sinon null. Symbole ambigu → contexte suivant ; résultat correct → démarche valorisée ; rature+correction → compétence. Bénéfice du doute systématique.
+LECTURE MANUSCRITE : Analyse chaque page comme un document physique. Confusions fréquentes — corrige par contexte : 1/7, 0/O/θ, 2/z, f/f', signe ×/x/+, tiret/−/=, virgule décimale/point, exposant collé à la base (x2 = x²), parenthèse oubliée. Si le résultat final est cohérent avec la démarche → la lecture est vraisemblablement correcte ; accorde les points. Rature+correction → valorise la correction. Calcul intermédiaire illisible mais résultat correct → accorde les points. Remplis "transcription" pour tout symbole ambigu, sinon null.
 
 NOTATION : valorise démarche (méthode correcte + erreur calcul = majorité des points) ; valorise débuts de recherche ; jamais 0/20 ; indulgent sur rédaction, exigeant sur logique.
 
-RÉDACTION : tutoie l'élève (prénom seul) ; sandwich (positif → critique → encouragement) ; conseil concret. Dans appreciation et conseil : français courant, pas de LaTeX. Dans remarque : LaTeX ($...$ inline, $$...$$ display) pour les formules ; commence chaque phrase ou formule sur une nouvelle ligne avec \\n ; dans le JSON double tous les antislashs (\\\\frac{}{}, \\\\sum, \\\\theta, \\\\sin pas \\frac, \\sum).
+CLÉMENCE : Ne jamais pénaliser deux fois la même erreur. Si la question N est fausse uniquement à cause d'une erreur commise à la question N-1, mais que la méthode à la question N est correcte, accorder tous les points de méthode de la question N. En cas de doute sur la sévérité d'une pénalité, toujours choisir l'option la plus favorable à l'élève.
+
+RÉDACTION : tutoie l'élève (prénom seul) ; sandwich (positif → critique → encouragement) ; conseil concret. Dans appreciation et conseil : français courant. Dans remarque : LaTeX ($...$ inline, $$...$$ display) pour les formules ; commence chaque phrase ou formule sur une nouvelle ligne avec \\n ; dans le JSON double tous les antislashs (\\\\frac{}{}, \\\\sum, \\\\theta, \\\\sin pas \\frac, \\sum).
 
 FORMAT : JSON valide uniquement, sans \`\`\`json.
 [{"name":"Prénom Nom","note":14,"appreciation":"...","details":[{"exercice":"Exercice 1","transcription":null,"obtenu":"3.5","sur":"5","remarque":"..."}],"conseil":"..."}]`;
@@ -394,17 +433,10 @@ function App() {
 /* ══ Devoir ═══════════════════════════════════════════════════════ */
 function Devoir({ sid, sname, onBack }) {
 
-  // Persist helpers
   function ld(k, fb) { var s = getSession(sid); return s[k] !== undefined ? s[k] : fb; }
   function ps(k, v)  { var all = getSessions(); var s = all[sid] || {}; s[k] = v; saveSession(sid, s); }
 
-  // Clé API mise à jour
-  var [apiKey, setApiKeyR] = useState(function() { 
-    try { 
-      var stored = localStorage.getItem("pf_apikey");
-      return stored || "AIzaSyCNregE3OjYMtVzNqTLODchhwsgLPtXDq0"; 
-    } catch(e) { return "AIzaSyCNregE3OjYMtVzNqTLODchhwsgLPtXDq0"; } 
-  });
+  var [apiKey, setApiKeyR] = useState(function() { try { return localStorage.getItem("pf_apikey") || ""; } catch(e) { return ""; } });
   function setApiKey(v) { setApiKeyR(v); try { localStorage.setItem("pf_apikey", v); } catch(e) {} }
 
   var [step,   setStepR]   = useState(function() { return ld("step", 0); });
@@ -421,6 +453,8 @@ function Devoir({ sid, sname, onBack }) {
   function setLatex(v) { setLatexR(v); ps("latex",v); }
   var [corrRef,     setCorrRefR]     = useState(function() { return ld("corrRef",""); });
   function setCorrRef(v) { setCorrRefR(v); ps("corrRef",v); }
+  var [corrSummary, setCorrSummaryR] = useState(function() { return ld("corrSummary",""); });
+  function setCorrSummary(v) { setCorrSummaryR(v); ps("corrSummary",v); }
   var [upSubName,   setUpSubNameR]   = useState(function() { return ld("upSubName",""); });
   function setUpSubName(v) { setUpSubNameR(v); ps("upSubName",v); }
   var [upSubPdf,    setUpSubPdf]     = useState(null); 
@@ -445,7 +479,7 @@ function Devoir({ sid, sname, onBack }) {
   function setMailsDone(v) { setMailsDoneR(v); ps("mailsDone",v); }
   var [resending,   setResending]    = useState(null);
   var [corrRefLoading, setCorrRefLoading] = useState(false);
-  var [progress,    setProgress]     = useState(null); 
+  var [progress,    setProgress]     = useState(null);
 
   function resetCorrections() {
     setCorrections([]);
@@ -455,16 +489,13 @@ function Devoir({ sid, sname, onBack }) {
     var parts = line.split(",").map(function(s){ return s.trim(); });
     return { id: i, name: parts[0] || ("Élève " + (i+1)), email: parts[1] || "" };
   });
-  var validCorrs = corrections.filter(function(c) { return !c.skipped; });
+  var validCorrs = corrections
+    .filter(function(c) { return !c.skipped; })
+    .sort(function(a, b) { return a.name.localeCompare(b.name, 'fr', {sensitivity:'base'}); });
   var avg = validCorrs.filter(function(c) { return !isNaN(+c.note); })
     .reduce(function(a, c, _, arr) { return a + (+c.note) / arr.length; }, 0);
 
-  var canNext = [
-    !!upSubPdf,
-    true,
-    corrections.length > 0,
-    true
-  ][step];
+  var canNext = [ !!upSubPdf, true, corrections.length > 0, true ][step];
 
   function readFile(file) {
     return new Promise(function(res) {
@@ -649,8 +680,18 @@ function Devoir({ sid, sname, onBack }) {
           );
           activeCorrRef = sysR.trim();
           setCorrRef(activeCorrRef);
+          setCorrSummary(""); 
         }catch(e){ console.warn("Corrigé ref échoué, on continue sans:",e); }
       }
+
+      var activeSummary = corrSummary;
+      if(!activeSummary && activeCorrRef){
+        setStatus("Condensation du barème (économie tokens)…");
+        activeSummary = await buildCorrSummary(activeCorrRef);
+        setCorrSummary(activeSummary);
+      }
+      
+      var corrForCorrecting = activeSummary || activeCorrRef;
 
       var allResults=[];
       if(copies.length===1){
@@ -667,14 +708,14 @@ function Devoir({ sid, sname, onBack }) {
               setProgress({current:i+1,total:pageRanges.length,label:pr.name.split(" ")[0]});
               try{
                 var sp=await extractStudentPdf(PDFLib,copies[0].b64,pr.pageStart,pr.pageEnd);
-                var r=await correctOnePdf(sp,pr.name,activeCorrRef);
+                var r=await correctOnePdf(sp,pr.name,corrForCorrecting);
                 if(r)allResults.push(r);
               }catch(e){ console.warn("Erreur "+pr.name,e); }
             }
             setProgress(null);
-          } else { allResults=await correctByLots(copies,activeCorrRef); }
-        } else { allResults=await correctByLots(copies,activeCorrRef); }
-      } else { allResults=await correctByLots(copies,activeCorrRef); }
+          } else { allResults=await correctByLots(copies,corrForCorrecting); }
+        } else { allResults=await correctByLots(copies,corrForCorrecting); }
+      } else { allResults=await correctByLots(copies,corrForCorrecting); }
       setCorrections(parsedStudents.map(function(s){
         var found=allResults.find(function(r){return r.name&&r.name.toLowerCase().includes(s.name.split(" ")[0].toLowerCase());});
         return found?Object.assign({},s,found):Object.assign({},s,{skipped:true});
@@ -717,8 +758,8 @@ function Devoir({ sid, sname, onBack }) {
     try {
       var b64 = await readFile(file);
       var blocks = [];
-      if (corrRef) {
-        blocks.push({ type:"text", text:"CORRIGÉ DE RÉFÉRENCE :\n" + corrRef });
+      if (corrSummary || corrRef) {
+        blocks.push({ type:"text", text:"BARÈME DE RÉFÉRENCE :\n" + (corrSummary || corrRef) });
       } else if (upSubPdf) {
         blocks.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:upSubPdf } });
       }
@@ -753,10 +794,30 @@ function Devoir({ sid, sname, onBack }) {
         DEFAULT_CORR_SYS
       );
       setCorrRef(raw.trim());
+      setCorrSummary(""); 
     } catch(e) { console.warn("buildCorrRef:", e); }
     finally { setCorrRefLoading(false); setStatus(""); }
   }
 
+  async function buildCorrSummary(corrRefText) {
+    if (!corrRefText || !apiKey) return "";
+    try {
+      var raw = await callGemini(apiKey,
+        [{ role:"user", content:
+          "Voici le corrigé LaTeX d'un devoir :\n\n" + corrRefText +
+          "\n\nGénère un barème condensé en texte simple (pas de LaTeX, pas de markdown). " +
+          "Pour chaque exercice et question : numéro | réponse finale | points | critères en une phrase. " +
+          "Exemple : Ex1 Q1 (2pts) : f'(x) = (1-2x)e^(-x). Critères : dérivée correcte 1pt, simplification 1pt.\n" +
+          "Sois le plus bref possible. Une ligne par question. Pas d'introduction."
+        }],
+        "Tu génères un barème condensé. Texte brut, une ligne par question, le plus court possible."
+      );
+      return raw.trim();
+    } catch(e) {
+      console.warn("buildCorrSummary:", e);
+      return "";
+    }
+  }
 
   async function applyEditInstr() {
     var instr = (corrEditInstr || "").trim();
@@ -773,39 +834,125 @@ function Devoir({ sid, sname, onBack }) {
         DEFAULT_CORR_SYS
       );
       setCorrRef(raw.trim());
+      setCorrSummary(""); 
       setCorrEditInstr("");
     } catch(e) { setStatus("❌ " + e.message); }
     finally { setBusy(false); setCorrEditBusy(false); setStatus(""); }
   }
 
-
-  function buildMailHtml(cor, corrRefLatex) {
+  function buildSimpleBodyHtml(cor) {
     var prenom = cor.name.split(" ")[0];
     var nc = !isNaN(+cor.note) ? (+cor.note >= 10 ? "#16a34a" : "#dc2626") : "#111";
-    var detRows = (cor.details || []).map(function(d) {
-      return "<tr><td style=\"padding:5px 8px;color:#555;border-top:1px solid #e5e7eb\">" + d.exercice + "</td>"
-        + "<td style=\"padding:5px 8px;font-weight:600;border-top:1px solid #e5e7eb;white-space:nowrap\">" + d.obtenu + "/" + d.sur + "</td>"
-        + "<td style=\"padding:5px 8px;color:#444;border-top:1px solid #e5e7eb\">" + latexToHtml(d.remarque||"") + "</td></tr>";
-    }).join("");
-    var corrHtml = corrRefLatex ? latexToHtml(corrRefLatex) : "";
-    return "<div style=\"font-family:Georgia,serif;max-width:640px;margin:0 auto;padding:24px;color:#111\">"
-      + "<h1 style=\"font-size:15pt;border-bottom:2px solid #333;padding-bottom:8px;margin-bottom:16px\">Bonjour " + prenom + ",</h1>"
-      + "<p style=\"font-size:13pt;margin-bottom:4px\">Voici ton résultat pour <strong>" + sname + "</strong>.</p>"
-      + "<p style=\"font-size:26pt;font-weight:bold;color:" + nc + ";margin:12px 0\">" + cor.note + "<span style=\"font-size:14pt;color:#555\"> / 20</span></p>"
-      + "<p style=\"color:#555;font-style:italic;margin-bottom:12px\">" + (cor.appreciation || "") + "</p>"
-      + (detRows ? "<table style=\"width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11pt\">" + detRows + "</table>" : "")
-      + (corrHtml
-        ? "<hr style=\"margin:20px 0;border:none;border-top:1px solid #e5e7eb\"/>"
-          + "<p style=\"font-weight:600;font-size:11pt;color:#374151;margin-bottom:12px\">📝 Corrigé du sujet :</p>"
-          + "<div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px 20px;line-height:1.8;font-size:12pt\">" + corrHtml + "</div>"
-        : "")
-      + "<div style=\"background:#eff6ff;border-left:3px solid #3b82f6;padding:12px 16px;margin-top:16px;border-radius:4px;font-size:11pt;color:#1e40af\">"
-      + "<strong>💡 Conseil :</strong> " + (cor.conseil || "") + "</div>"
-      + "<p style=\"margin-top:20px;color:#555;font-size:11pt\">Cordialement,<br/>F. Nocca</p></div>";
+    return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/></head><body>"
+      + "<div style=\"font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111\">"
+      + "<p style=\"font-size:16px;margin:0 0 14px\">Bonjour <strong>" + prenom + "</strong>,</p>"
+      + "<p style=\"margin:0 0 10px\">Voici ton résultat pour le devoir <strong>" + sname + "</strong>&nbsp;:</p>"
+      + "<p style=\"font-size:38px;font-weight:bold;color:" + nc + ";margin:14px 0\">"
+      + cor.note + "<span style=\"font-size:18px;color:#666\">&nbsp;/&nbsp;20</span></p>"
+      + "<p style=\"color:#555;font-style:italic;margin:0 0 16px\">" + (cor.appreciation || "") + "</p>"
+      + "<p style=\"margin:0 0 20px\">Ton corrigé personnalisé est joint à ce message.</p>"
+      + "<p style=\"color:#777;font-size:13px\">Cordialement,<br/>F.&nbsp;Nocca</p>"
+      + "</div></body></html>";
   }
 
-  async function sendOne(cor) {
-    await sendGmailHtml(cor.email, "Résultats – " + sname, buildMailHtml(cor, corrRef));
+  async function buildStudentPdf(cor, corrRefLatex, cache) {
+    if (!window.jspdf) throw new Error("jsPDF non chargé");
+
+    var nc = !isNaN(+cor.note) ? (+cor.note >= 10 ? "#16a34a" : "#dc2626") : "#111";
+
+    var detRows = (cor.details || []).map(function(d) {
+      return "<tr>"
+        + "<td style=\"padding:6px 8px;border-top:1px solid #e5e7eb;color:#555;vertical-align:top;font-size:10.5pt\">" + d.exercice + "</td>"
+        + "<td style=\"padding:6px 8px;border-top:1px solid #e5e7eb;font-weight:600;white-space:nowrap;vertical-align:top;font-size:10.5pt\">" + d.obtenu + "/" + d.sur + "</td>"
+        + "<td style=\"padding:6px 8px;border-top:1px solid #e5e7eb;color:#333;vertical-align:top;font-size:10pt\">" + latexToHtml(d.remarque || "") + "</td>"
+        + "</tr>";
+    }).join("");
+
+    var personalHtml = "<div style=\"font-family:Georgia,serif;color:#111;line-height:1.7;font-size:12pt\">"
+      + "<h1 style=\"font-size:15pt;border-bottom:2px solid #333;padding-bottom:8px;margin:0 0 14px\">" + sname + " — Résultats</h1>"
+      + "<h2 style=\"font-size:13pt;margin:0 0 6px;font-weight:bold\">" + cor.name + "</h2>"
+      + "<p style=\"font-size:30pt;font-weight:bold;color:" + nc + ";margin:8px 0 4px\">" + cor.note + "<span style=\"font-size:14pt;color:#666\"> /20</span></p>"
+      + "<div style=\"color:#555;font-style:italic;margin:0 0 12px\">" + latexToHtml(cor.appreciation || "") + "</div>"
+      + (detRows ? "<table style=\"width:100%;border-collapse:collapse;margin-bottom:12px\">" + detRows + "</table>" : "")
+      + "<div style=\"background:#eff6ff;border-left:3px solid #3b82f6;border-radius:3px;overflow:hidden\">"
+      + "<div style=\"padding:6px 13px 0;font-weight:bold;color:#1e40af;font-size:10pt\">Conseil :</div>"
+      + "<div style=\"padding:2px 13px 10px;color:#1e40af;font-size:10pt\">" + latexToHtml(cor.conseil || "") + "</div>"
+      + "</div>"
+      + "</div>";
+
+    async function renderDiv(html, extraCss) {
+      var div = document.createElement("div");
+      div.style.cssText = "position:fixed;left:-9999px;top:0;width:680px;background:#fff;" + (extraCss || "padding:28px 36px;");
+      div.innerHTML = html;
+      document.body.appendChild(div);
+      await document.fonts.ready;
+      await new Promise(function(r) { setTimeout(r, 700); });
+      var cv = await window.html2canvas(div, { scale: 1.5, useCORS: true, backgroundColor: "#ffffff", logging: false });
+      document.body.removeChild(div);
+      return cv;
+    }
+
+    var canvas1 = await renderDiv(personalHtml);
+
+    var canvas2 = null;
+    if (corrRefLatex) {
+      if (cache && cache.corrCanvas) {
+        canvas2 = cache.corrCanvas;
+      } else {
+        var corrHtml = "<div style=\"font-family:Georgia,serif;font-size:11.5pt;line-height:1.75;color:#111\">"
+          + "<hr style=\"border:none;border-top:2px solid #333;margin:0 0 14px\"/>"
+          + "<h2 style=\"font-size:14pt;margin:0 0 14px;font-weight:bold\">Corrigé du sujet</h2>"
+          + latexToHtml(corrRefLatex)
+          + "</div>";
+        var div2 = document.createElement("div");
+        div2.style.cssText = "position:fixed;left:-9999px;top:0;width:680px;background:#fff;padding:18px 36px 32px;";
+        div2.innerHTML = corrHtml;
+        document.body.appendChild(div2);
+        await document.fonts.ready;
+        await new Promise(function(r) { setTimeout(r, 1200); });
+        canvas2 = await window.html2canvas(div2, { scale: 1.5, useCORS: true, backgroundColor: "#ffffff", logging: false });
+        document.body.removeChild(div2);
+        if (cache) cache.corrCanvas = canvas2; 
+      }
+    }
+
+    var jsPDF = window.jspdf.jsPDF;
+    var pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    var W = pdf.internal.pageSize.getWidth();   
+    var H = pdf.internal.pageSize.getHeight();  
+    var mg = 12, iw = W - mg * 2, ih = H - mg * 2;
+    var firstPage = true;
+
+    function addCanvasToPdf(cv) {
+      var totalMm = (cv.height / cv.width) * iw;
+      var pages = Math.ceil(totalMm / ih);
+      for (var p = 0; p < pages; p++) {
+        if (!firstPage) pdf.addPage();
+        firstPage = false;
+        var y0 = Math.round((p * ih / totalMm) * cv.height);
+        var y1 = Math.min(Math.round(((p + 1) * ih / totalMm) * cv.height), cv.height);
+        var sc = document.createElement("canvas");
+        sc.width = cv.width; sc.height = y1 - y0;
+        sc.getContext("2d").drawImage(cv, 0, y0, cv.width, sc.height, 0, 0, cv.width, sc.height);
+        var sliceMm = (sc.height / cv.height) * totalMm;
+        pdf.addImage(sc.toDataURL("image/jpeg", 0.80), "JPEG", mg, mg, iw, sliceMm);
+      }
+    }
+
+    addCanvasToPdf(canvas1);
+    if (canvas2) addCanvasToPdf(canvas2);
+
+    return pdfToBase64(pdf);
+  }
+
+  async function sendOne(cor, corrCache) {
+    var fname = "Corrige_"
+      + cor.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "_")
+      + ".pdf";
+    setStatus("⏳ PDF " + cor.name.split(" ")[0] + "…");
+    var pdfB64 = await buildStudentPdf(cor, corrRef, corrCache || {});
+    setStatus("📧 Envoi à " + cor.name.split(" ")[0] + "…");
+    await sendGmailWithAttachment(cor.email, "Résultats – " + sname, buildSimpleBodyHtml(cor), pdfB64, fname);
   }
 
   async function resendOne(cor) {
@@ -813,9 +960,10 @@ function Devoir({ sid, sname, onBack }) {
     setResending(cor.id);
     try {
       await getGmailToken();
-      await sendOne(cor);
+      await loadH2C();
+      await sendOne(cor, {});
     } catch(e) { alert("Erreur renvoi : " + e.message); }
-    finally { setResending(null); }
+    finally { setResending(null); setStatus(""); }
   }
 
   async function sendResults() {
@@ -825,11 +973,15 @@ function Devoir({ sid, sname, onBack }) {
     try {
       setStatus("Connexion Gmail…");
       await getGmailToken();
+      setStatus("Chargement rendu PDF…");
+      await loadH2C();
+
+      var corrCache = {};
 
       var errors = [];
       for (var i = 0; i < toSend.length; i++) {
         setProgress({ current: i+1, total: toSend.length, label: toSend[i].name.split(" ")[0] });
-        try { await sendOne(toSend[i]); }
+        try { await sendOne(toSend[i], corrCache); }
         catch(e) { errors.push(toSend[i].name); console.error(e); }
       }
       setProgress(null);
@@ -843,18 +995,15 @@ function Devoir({ sid, sname, onBack }) {
   }
 
   function exportCsv() {
-    var details0 = validCorrs.length > 0 ? (validCorrs[0].details || []) : [];
-    var detH = details0.map(function(d) { return "\"" + d.exercice + " (pts)\",\"" + d.exercice + " (remarque)\""; }).join(",");
-    var header = "\"Nom\",\"Note /20\",\"Appréciation\",\"Conseil\"" + (detH ? "," + detH : "");
+    var exCols = validCorrs.length > 0 ? (validCorrs[0].details || []).map(function(d){return d.exercice;}) : [];
+    var header = ["Nom","Note /20"].concat(exCols).map(function(h){return '"'+h+'"';}).join(",");
     var rows = validCorrs.map(function(c) {
-      var appr = (c.appreciation || "").replace(/"/g, "'");
-      var cons = (c.conseil || "").replace(/"/g, "'");
-      var base = "\"" + c.name + "\",\"" + c.note + "\",\"" + appr + "\",\"" + cons + "\"";
-      var det = details0.map(function(_, i) {
-        var d = c.details && c.details[i];
-        return d ? "\"" + d.obtenu + "/" + d.sur + "\",\"" + (d.remarque||"").replace(/"/g,"'") + "\"" : "\"\",\"\"";
-      }).join(",");
-      return base + (det ? "," + det : "");
+      var base = ['"'+c.name+'"', '"'+c.note+'"'];
+      var pts = exCols.map(function(ex) {
+        var d = (c.details||[]).find(function(d){return d.exercice===ex;});
+        return '"'+(d ? d.obtenu+"/"+d.sur : "")+'"';
+      });
+      return base.concat(pts).join(",");
     });
     var csv = "\uFEFF" + [header].concat(rows).join("\n");
     var a = document.createElement("a");
@@ -880,7 +1029,7 @@ function Devoir({ sid, sname, onBack }) {
     }
     addLine("Récapitulatif — " + sname, { bold:true, size:14, after:4 });
     addLine("Moyenne : " + avg.toFixed(1) + "/20", { size:11, color:[80,80,80], after:6 });
-    validCorrs.forEach(function(c) {
+    validCorrs.forEach(function(c) { 
       if (y > 250) { pdf.addPage(); y = M; }
       pdf.setDrawColor(200,200,200); pdf.line(M, y, M+PW, y); y += 4;
       var col = !isNaN(+c.note) ? (+c.note >= 10 ? [22,163,74] : [220,38,38]) : [0,0,0];
@@ -895,12 +1044,9 @@ function Devoir({ sid, sname, onBack }) {
     pdf.save("recap_" + sname.replace(/[^a-z0-9]/gi,"_") + ".pdf");
   }
 
-
-  /* ══ RENDU ═══════════════════════════════════════════════════════ */
   return (
     <div style={{maxWidth:700,margin:"0 auto",padding:"1.5rem 1rem"}}>
 
-      {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.5rem"}}>
         <div>
           <h1 style={{fontSize:16,marginBottom:2}}>📐 {sname}</h1>
@@ -909,16 +1055,14 @@ function Devoir({ sid, sname, onBack }) {
         <span style={{fontSize:11,color:"#9ca3af"}}>💾 Sauvegarde auto</span>
       </div>
 
-      {/* Clé API */}
       <Card>
-        <Field label="🔑 Clé API Gemini">
-          <input type="password" value={apiKey} onChange={function(e){setApiKey(e.target.value);}} placeholder="AIzaSy..." style={{fontFamily:"monospace"}}/>
+        <Field label="🔑 Clé API Google Gemini">
+          <input type="password" value={apiKey} onChange={function(e){setApiKey(e.target.value);}} placeholder="AIza..." style={{fontFamily:"monospace"}}/>
         </Field>
         {!apiKey && <p style={{fontSize:12,color:"#dc2626",marginTop:6}}>⚠️ Saisissez votre clé API pour activer l'outil.</p>}
         {apiKey  && <p style={{fontSize:12,color:"#16a34a",marginTop:6}}>✓ Clé partagée entre tous les devoirs.</p>}
       </Card>
 
-      {/* Stepper */}
       <div style={{display:"flex",alignItems:"flex-start",marginBottom:"2rem"}}>
         {STEPS.map(function(label, i) {
           var done = i < step, active = i === step;
@@ -941,7 +1085,6 @@ function Devoir({ sid, sname, onBack }) {
         })}
       </div>
 
-      {/* ═══ STEP 0 : Sujet PDF ═══ */}
       {step === 0 && (
         <Card>
           <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>📄 Votre sujet en PDF</div>
@@ -962,9 +1105,13 @@ function Devoir({ sid, sname, onBack }) {
         </Card>
       )}
 
-      {/* ═══ STEP 1 : Diffusion ═══ */}
       {step === 1 && (
         <div>
+          {corrections.length > 0 && (
+            <div style={{background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:12,color:"#166534",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span>✅ Correction terminée — naviguez librement sans relancer quoi que ce soit.</span>
+            </div>
+          )}
           <Card>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
               <span style={{fontSize:20}}>✓</span>
@@ -978,7 +1125,7 @@ function Devoir({ sid, sname, onBack }) {
             <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>👥 Liste des élèves</div>
             <DropZone id="copies-step1" multiple={true}
               loaded={copies.length > 0}
-              name={copies.length + " fichier(s) chargé(s)"}
+              name={copies.map(function(c){return c.name;}).join(", ")}
               onFiles={addCopies}
               label="📄 Déposez le(s) PDF des copies pour extraire les noms automatiquement"
               sub="(le PDF sera réutilisé à l'étape Correction)"/>
@@ -992,10 +1139,8 @@ function Devoir({ sid, sname, onBack }) {
         </div>
       )}
 
-      {/* ═══ STEP 2 : Correction ═══ */}
       {step === 2 && (
         <div>
-          {/* Prompt éditable */}
           {corrections.length === 0 && (
             <Card>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:showPrompt?10:0}}>
@@ -1016,7 +1161,6 @@ function Devoir({ sid, sname, onBack }) {
             </Card>
           )}
 
-          {/* Corrigé rendu KaTeX + zone de consignes */}
           {corrections.length === 0 && (
             <Card>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -1027,10 +1171,8 @@ function Devoir({ sid, sname, onBack }) {
               {corrRefLoading && <p style={{fontSize:12,color:"#6b7280",textAlign:"center"}}>Génération du corrigé depuis le sujet PDF…</p>}
               {!corrRefLoading&&corrRef && (
                 <div>
-                  {/* Rendu KaTeX du corrigé */}
                   <div style={{background:"#fff",border:"0.5px solid #e5e7eb",borderRadius:8,padding:"20px 24px",lineHeight:1.8,fontSize:13,maxHeight:400,overflowY:"auto",marginBottom:12}}
                     dangerouslySetInnerHTML={{__html:latexToHtml(corrRef)}}/>
-                  {/* Zone de consignes pour modifier le corrigé */}
                   <div style={{background:"#f0f9ff",border:"0.5px solid #bae6fd",borderRadius:8,padding:"12px 14px"}}>
                     <div style={{fontSize:12,fontWeight:500,color:"#0369a1",marginBottom:6}}>✏️ Modifier le corrigé</div>
                     <p style={{fontSize:11,color:"#0369a1",marginBottom:8}}>Décrivez vos modifications et cliquez sur "Régénérer" :</p>
@@ -1048,7 +1190,6 @@ function Devoir({ sid, sname, onBack }) {
             </Card>
           )}
 
-          {/* Zone upload copies */}
           {corrections.length === 0 && (
             <Card>
               <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>📄 Copies à corriger</div>
@@ -1077,29 +1218,34 @@ function Devoir({ sid, sname, onBack }) {
               {copies.length > 0 && (
                 <div>
                   <button disabled={busy||!apiKey||corrRefLoading} onClick={correctFromPdf} style={{width:"100%",marginBottom:6}}>
-                    {busy ? status : "🤖 Corriger depuis les PDFs ↗"}
+                    {busy ? (status||"⏳ Correction en cours…") : "🤖 Corriger depuis les PDFs ↗"}
                   </button>
-                  {busy && status && (
-                    <p style={{fontSize:12,color:"#1d4ed8",textAlign:"center",marginBottom:4}}>⏳ {status}</p>
+                  {busy && progress && (
+                    <div style={{marginBottom:8}}>
+                      <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#6b7280",marginBottom:4}}>
+                        <span>📝 Correction de {progress.label}…</span>
+                        <span>{progress.current}/{progress.total}</span>
+                      </div>
+                      <div style={{background:"#e5e7eb",borderRadius:999,height:6}}>
+                        <div style={{background:"#1d4ed8",borderRadius:999,height:6,width:(progress.current/progress.total*100)+"%",transition:"width 0.4s"}}/>
+                      </div>
+                    </div>
                   )}
-                  {!busy && status && status.startsWith("❌") && (
-                    <p style={{fontSize:12,color:"#dc2626",textAlign:"center",marginBottom:4}}>{status}</p>
+                  {busy && status && !progress && (
+                    <p style={{fontSize:12,color:"#1d4ed8",textAlign:"center",marginBottom:4}}>⏳ {status}</p>
                   )}
                   {!busy && copies.length > 0 && (
                     <p style={{fontSize:11,color:"#9ca3af",textAlign:"center",marginTop:2}}>
-                      {copies.length} fichier{copies.length>1?"s":""} — ~{Math.ceil(copies.length/10)} lot{Math.ceil(copies.length/10)>1?"s":""}
+                      {copies.length} fichier{copies.length>1?"s":""} — ~{Math.ceil(copies.length/10)} lot{Math.ceil(copies.length/10)>1?"s":""} — ~{Math.ceil(copies.length*8)} tokens de sortie estimés
                     </p>
                   )}
                 </div>
               )}
-
             </Card>
           )}
 
-          {/* Résultats de correction */}
           {corrections.length > 0 && (
             <div>
-              {/* Corrigé général — affiché une seule fois */}
               {corrRef && (
                 <Card style={{marginBottom:12}}>
                   <div style={{fontSize:13,fontWeight:500,color:"#374151",marginBottom:10}}>📐 Corrigé du sujet</div>
@@ -1107,7 +1253,7 @@ function Devoir({ sid, sname, onBack }) {
                     dangerouslySetInnerHTML={{__html:latexToHtml(corrRef)}}/>
                 </Card>
               )}
-              {parsedStudents.map(function(s) {
+              {parsedStudents.slice().sort(function(a,b){return a.name.localeCompare(b.name,'fr',{sensitivity:'base'});}).map(function(s) {
                 var c = corrections.find(function(x){return x.id===s.id;});
                 var nc = c && !isNaN(+c.note) ? (+c.note>=10?"#16a34a":"#dc2626") : "#111";
                 return (
@@ -1123,7 +1269,7 @@ function Devoir({ sid, sname, onBack }) {
                     </div>
                     {c && !c.skipped ? (
                       <div>
-                        <p style={{fontSize:13,color:"#6b7280",margin:"0 0 8px"}}>{c.appreciation}</p>
+                        <div style={{fontSize:13,color:"#6b7280",margin:"0 0 8px",lineHeight:1.6}} dangerouslySetInnerHTML={{__html:latexToHtml(c.appreciation||"")}}/>
                         {(c.details||[]).map(function(d,i) {
                           return (
                             <div key={i} style={{padding:"6px 0",borderTop:"0.5px solid #e5e7eb",fontSize:12}}>
@@ -1140,7 +1286,7 @@ function Devoir({ sid, sname, onBack }) {
                             </div>
                           );
                         })}
-                        <p style={{fontSize:12,color:"#6b7280",fontStyle:"italic",margin:"8px 0 0"}}>💡 {c.conseil}</p>
+                        <div style={{fontSize:12,color:"#6b7280",fontStyle:"italic",margin:"8px 0 0",lineHeight:1.6}} dangerouslySetInnerHTML={{__html:"💡 " + latexToHtml(c.conseil||"")}} />
                       </div>
                     ) : (
                       <p style={{fontSize:13,color:"#9ca3af",fontStyle:"italic"}}>Copie non trouvée dans le PDF</p>
@@ -1148,7 +1294,6 @@ function Devoir({ sid, sname, onBack }) {
                   </Card>
                 );
               })}
-              {/* Copies en retard (non dans la liste principale) */}
               {corrections.filter(function(c){return !parsedStudents.find(function(s){return s.id===c.id;})&&!c.skipped;}).map(function(c) {
                 var nc = !isNaN(+c.note)?(+c.note>=10?"#16a34a":"#dc2626"):"#111";
                 return (
@@ -1157,7 +1302,7 @@ function Devoir({ sid, sname, onBack }) {
                       <span style={{fontSize:14,fontWeight:500}}>{c.name} <span style={{fontSize:11,color:"#9ca3af"}}>(retard)</span></span>
                       <span style={{fontSize:22,fontWeight:500,color:nc}}>{c.note}<span style={{fontSize:14,color:"#6b7280"}}>/20</span></span>
                     </div>
-                    <p style={{fontSize:13,color:"#6b7280"}}>{c.appreciation}</p>
+                    <div style={{fontSize:13,color:"#6b7280",lineHeight:1.6}} dangerouslySetInnerHTML={{__html:latexToHtml(c.appreciation||"")}}/>
                   </Card>
                 );
               })}
@@ -1175,10 +1320,8 @@ function Devoir({ sid, sname, onBack }) {
         </div>
       )}
 
-      {/* ═══ STEP 3 : Résultats ═══ */}
       {step === 3 && (
         <Card>
-          {/* Aperçu corrigé KaTeX */}
           {corrRef && (
             <div style={{marginBottom:16}}>
               <div style={{fontSize:13,fontWeight:500,marginBottom:8,color:"#374151"}}>
@@ -1194,13 +1337,11 @@ function Devoir({ sid, sname, onBack }) {
             </div>
           )}
 
-          {/* Exports */}
           <div style={{display:"flex",gap:8,marginBottom:16}}>
             <button onClick={exportCsv} style={{flex:1,fontSize:12,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}}>📊 CSV</button>
             <button onClick={exportRecap} disabled={!window.jspdf} style={{flex:1,fontSize:12,background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}}>📄 PDF récap</button>
           </div>
 
-          {/* Grille des notes */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:16}}>
             {validCorrs.map(function(c) {
               var nc = !isNaN(+c.note)?(+c.note>=10?"#16a34a":"#dc2626"):"#6b7280";
@@ -1219,19 +1360,16 @@ function Devoir({ sid, sname, onBack }) {
             })}
           </div>
 
-          {/* Moyenne */}
           <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderTop:"0.5px solid #e5e7eb"}}>
             <span style={{fontSize:13,color:"#6b7280"}}>Moyenne de classe</span>
             <span style={{fontSize:18,fontWeight:500}}>{validCorrs.length > 0 ? avg.toFixed(1) : "—"}/20</span>
           </div>
 
-          {/* Info envoi */}
           <div style={{background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 12px",margin:"12px 0",fontSize:12,color:"#166534"}}>
             ✉️ Envoi depuis <strong>maths.perriand@gmail.com</strong> — le corrigé avec les formules est intégré dans chaque mail.<br/>
             Un écran Google s'ouvrira la première fois pour autoriser l'envoi.
           </div>
 
-          {/* Bouton envoi ou succès */}
           {mailsDone ? (
             <div style={{textAlign:"center",padding:"1.5rem"}}>
               <div style={{fontSize:28,marginBottom:8}}>✅</div>
@@ -1241,8 +1379,8 @@ function Devoir({ sid, sname, onBack }) {
           ) : (
             <div>
               <div style={{fontSize:11,color:"#6b7280",textAlign:"center",margin:"8px 0"}}>
-                ⏱ ~{Math.ceil(validCorrs.filter(function(c){return !!c.email;}).length*3/60)+1} min
-                &nbsp;·&nbsp; 0 appel Gemini
+                ⏱ ~{Math.ceil(validCorrs.filter(function(c){return !!c.email;}).length*5/60)+1} min
+                &nbsp;·&nbsp; PDF + mail par élève &nbsp;·&nbsp; 0 appel Gemini
               </div>
               {busy && progress && (
                 <div style={{marginBottom:12}}>
@@ -1264,7 +1402,6 @@ function Devoir({ sid, sname, onBack }) {
         </Card>
       )}
 
-      {/* Navigation */}
       <div style={{display:"flex",justifyContent:"space-between",marginTop:"1.5rem"}}>
         {step > 0
           ? <button style={{background:"#f3f4f6",color:"#374151",border:"0.5px solid #d1d5db"}} disabled={busy} onClick={function(){setStep(step-1);}}>← Retour</button>
@@ -1272,14 +1409,16 @@ function Devoir({ sid, sname, onBack }) {
         }
         {step < 3 && (
           <button disabled={!canNext||busy||!apiKey} onClick={function(){setStep(step+1);}}>
-            {["Diffuser →","Corriger les copies →","Voir les résultats →"][step]}
+            {step === 1 && corrections.length > 0
+              ? "Voir les résultats →"
+              : ["Diffuser →","Corriger les copies →","Voir les résultats →"][step]}
           </button>
         )}
       </div>
       <p style={{textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:"2rem"}}>Powered by Gemini (Google)</p>
     </div>
   );
-} // fin Devoir
+} 
 
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
 </script>
